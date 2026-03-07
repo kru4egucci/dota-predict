@@ -1,5 +1,33 @@
 package models
 
+import (
+	"encoding/json"
+	"strconv"
+)
+
+// jsonInt64 unmarshals from both JSON number and JSON string.
+type jsonInt64 int64
+
+func (j *jsonInt64) UnmarshalJSON(data []byte) error {
+	// Try number first.
+	var n int64
+	if err := json.Unmarshal(data, &n); err == nil {
+		*j = jsonInt64(n)
+		return nil
+	}
+	// Try string.
+	var s string
+	if err := json.Unmarshal(data, &s); err != nil {
+		return err
+	}
+	n, err := strconv.ParseInt(s, 10, 64)
+	if err != nil {
+		return err
+	}
+	*j = jsonInt64(n)
+	return nil
+}
+
 // Match represents the GET /matches/{match_id} response.
 type Match struct {
 	MatchID      int64         `json:"match_id"`
@@ -144,6 +172,69 @@ type TeamPlayer struct {
 	GamesPlayed         int    `json:"games_played"`
 	Wins                int    `json:"wins"`
 	IsCurrentTeamMember bool   `json:"is_current_team_member"`
+}
+
+// LiveGame represents an entry from GET /live response.
+// Some numeric fields come as strings from the API, so we use json.Number / string where needed.
+type LiveGame struct {
+	MatchID          jsonInt64    `json:"match_id"`
+	LobbyID          string       `json:"lobby_id"`
+	LobbyType        int          `json:"lobby_type"`
+	GameTime         int          `json:"game_time"`
+	GameMode         int          `json:"game_mode"`
+	AverageMMR       int          `json:"average_mmr"`
+	RadiantScore     int          `json:"radiant_score"`
+	DireScore        int          `json:"dire_score"`
+	RadiantLead      int          `json:"radiant_lead"`
+	SortScore        float64      `json:"sort_score"`
+	Players          []LivePlayer `json:"players"`
+	RadiantTeamName  string       `json:"team_name_radiant"`
+	DireTeamName     string       `json:"team_name_dire"`
+	RadiantTeamID    int          `json:"team_id_radiant"`
+	DireTeamID       int          `json:"team_id_dire"`
+	BuildingState    uint64       `json:"building_state"`
+}
+
+// LivePlayer represents a player in a live game.
+type LivePlayer struct {
+	AccountID int `json:"account_id"`
+	HeroID    int `json:"hero_id"`
+	Team      int `json:"team"` // 0 = radiant, 1 = dire
+}
+
+// ToMatch converts a LiveGame into a Match for unified processing.
+func (lg *LiveGame) ToMatch() *Match {
+	m := &Match{
+		MatchID:      int64(lg.MatchID),
+		GameMode:     lg.GameMode,
+		LobbyType:    lg.LobbyType,
+		RadiantScore: lg.RadiantScore,
+		DireScore:    lg.DireScore,
+		RadiantTeam: MatchTeam{
+			TeamID: lg.RadiantTeamID,
+			Name:   lg.RadiantTeamName,
+		},
+		DireTeam: MatchTeam{
+			TeamID: lg.DireTeamID,
+			Name:   lg.DireTeamName,
+		},
+	}
+
+	for _, p := range lg.Players {
+		isRadiant := p.Team == 0
+		slot := 0
+		if !isRadiant {
+			slot = 128
+		}
+		m.Players = append(m.Players, MatchPlayer{
+			AccountID:  p.AccountID,
+			PlayerSlot: slot,
+			HeroID:     p.HeroID,
+			IsRadiant:  isRadiant,
+		})
+	}
+
+	return m
 }
 
 // PlayerHeroStat represents GET /players/{account_id}/heroes response entry.

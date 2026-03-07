@@ -9,6 +9,7 @@ import (
 	"dota-predict/internal/analyzer"
 	"dota-predict/internal/api/opendota"
 	"dota-predict/internal/api/openrouter"
+	"dota-predict/internal/api/steam"
 	"dota-predict/internal/collector"
 	"dota-predict/internal/config"
 	"dota-predict/internal/display"
@@ -33,11 +34,12 @@ func main() {
 	}
 
 	odClient := opendota.NewClient()
+	steamClient := steam.NewClient(cfg.SteamAPIKey) // nil if key not set
 	orClient := openrouter.NewClient(cfg.OpenRouterAPIKey, cfg.OpenRouterModel)
 
 	ctx := context.Background()
 
-	coll := collector.New(odClient)
+	coll := collector.New(odClient, steamClient)
 	data, err := coll.CollectMatchData(ctx, matchID)
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "Ошибка сбора данных: %v\n", err)

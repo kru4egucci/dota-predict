@@ -11,6 +11,7 @@ import (
 type Config struct {
 	OpenRouterAPIKey string
 	OpenRouterModel  string
+	SteamAPIKey      string
 }
 
 // Load reads configuration from .env file (if present) and environment variables.
@@ -31,5 +32,6 @@ func Load() (*Config, error) {
 	return &Config{
 		OpenRouterAPIKey: apiKey,
 		OpenRouterModel:  model,
+		SteamAPIKey:      os.Getenv("STEAM_API_KEY"),
 	}, nil
 }

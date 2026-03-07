@@ -8,17 +8,19 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"dota-predict/internal/api/opendota"
+	"dota-predict/internal/api/steam"
 	"dota-predict/internal/models"
 )
 
-// Collector orchestrates data collection from OpenDota API.
+// Collector orchestrates data collection from OpenDota and Steam APIs.
 type Collector struct {
-	client *opendota.Client
+	od    *opendota.Client
+	steam *steam.Client // may be nil
 }
 
 // New creates a new Collector.
-func New(client *opendota.Client) *Collector {
-	return &Collector{client: client}
+func New(od *opendota.Client, steam *steam.Client) *Collector {
+	return &Collector{od: od, steam: steam}
 }
 
 // CollectMatchData fetches all data needed for match prediction.
@@ -31,15 +33,15 @@ func (c *Collector) CollectMatchData(ctx context.Context, matchID int64) (*model
 		PlayerRecent:    make(map[int][]models.PlayerRecentMatch),
 	}
 
-	// Шаг 1: Загрузка данных матча.
+	// Шаг 1: Загрузка матча (OpenDota -> OpenDota Live -> Steam Live).
 	fmt.Printf("[1/4] Загрузка матча %d...\n", matchID)
-	match, err := c.client.GetMatch(ctx, matchID)
+	match, err := c.fetchMatch(ctx, matchID)
 	if err != nil {
-		return nil, fmt.Errorf("fetching match: %w", err)
+		return nil, fmt.Errorf("загрузка матча: %w", err)
 	}
 	data.Match = *match
 
-	// Extract IDs for concurrent fetching.
+	// Извлекаем ID для параллельных запросов.
 	radiantHeroes, direHeroes := splitHeroesByTeam(match)
 	allHeroIDs := append(radiantHeroes, direHeroes...)
 
@@ -53,12 +55,11 @@ func (c *Collector) CollectMatchData(ctx context.Context, matchID int64) (*model
 		fmt.Println("[2/4] Публичный матч — сбор данных по героям и игрокам...")
 	}
 
-	// Step 2: Concurrent data fetching.
+	// Шаг 2: Параллельный сбор данных.
 	g, gctx := errgroup.WithContext(ctx)
 
-	// Hero names.
 	g.Go(func() error {
-		heroes, err := c.client.GetHeroes(gctx)
+		heroes, err := c.od.GetHeroes(gctx)
 		if err != nil {
 			log.Printf("  [!] не удалось получить список героев: %v", err)
 			return nil
@@ -69,9 +70,8 @@ func (c *Collector) CollectMatchData(ctx context.Context, matchID int64) (*model
 		return nil
 	})
 
-	// Hero stats.
 	g.Go(func() error {
-		stats, err := c.client.GetHeroStats(gctx)
+		stats, err := c.od.GetHeroStats(gctx)
 		if err != nil {
 			log.Printf("  [!] не удалось получить статистику героев: %v", err)
 			return nil
@@ -82,10 +82,9 @@ func (c *Collector) CollectMatchData(ctx context.Context, matchID int64) (*model
 		return nil
 	})
 
-	// Hero matchups (one request per hero in the match).
 	for _, heroID := range allHeroIDs {
 		g.Go(func() error {
-			matchups, err := c.client.GetHeroMatchups(gctx, heroID)
+			matchups, err := c.od.GetHeroMatchups(gctx, heroID)
 			if err != nil {
 				log.Printf("  [!] не удалось получить матчапы героя %d: %v", heroID, err)
 				return nil
@@ -95,10 +94,9 @@ func (c *Collector) CollectMatchData(ctx context.Context, matchID int64) (*model
 		})
 	}
 
-	// Team data (pro matches only).
 	if isPro {
 		g.Go(func() error {
-			team, err := c.client.GetTeam(gctx, radiantTeamID)
+			team, err := c.od.GetTeam(gctx, radiantTeamID)
 			if err != nil {
 				log.Printf("  [!] не удалось получить данные команды Radiant: %v", err)
 				return nil
@@ -108,7 +106,7 @@ func (c *Collector) CollectMatchData(ctx context.Context, matchID int64) (*model
 		})
 
 		g.Go(func() error {
-			team, err := c.client.GetTeam(gctx, direTeamID)
+			team, err := c.od.GetTeam(gctx, direTeamID)
 			if err != nil {
 				log.Printf("  [!] не удалось получить данные команды Dire: %v", err)
 				return nil
@@ -118,7 +116,7 @@ func (c *Collector) CollectMatchData(ctx context.Context, matchID int64) (*model
 		})
 
 		g.Go(func() error {
-			matches, err := c.client.GetTeamMatches(gctx, radiantTeamID)
+			matches, err := c.od.GetTeamMatches(gctx, radiantTeamID)
 			if err != nil {
 				log.Printf("  [!] не удалось получить матчи команды Radiant: %v", err)
 				return nil
@@ -128,7 +126,7 @@ func (c *Collector) CollectMatchData(ctx context.Context, matchID int64) (*model
 		})
 
 		g.Go(func() error {
-			matches, err := c.client.GetTeamMatches(gctx, direTeamID)
+			matches, err := c.od.GetTeamMatches(gctx, direTeamID)
 			if err != nil {
 				log.Printf("  [!] не удалось получить матчи команды Dire: %v", err)
 				return nil
@@ -138,7 +136,7 @@ func (c *Collector) CollectMatchData(ctx context.Context, matchID int64) (*model
 		})
 
 		g.Go(func() error {
-			heroes, err := c.client.GetTeamHeroes(gctx, radiantTeamID)
+			heroes, err := c.od.GetTeamHeroes(gctx, radiantTeamID)
 			if err != nil {
 				log.Printf("  [!] не удалось получить героев команды Radiant: %v", err)
 				return nil
@@ -148,7 +146,7 @@ func (c *Collector) CollectMatchData(ctx context.Context, matchID int64) (*model
 		})
 
 		g.Go(func() error {
-			heroes, err := c.client.GetTeamHeroes(gctx, direTeamID)
+			heroes, err := c.od.GetTeamHeroes(gctx, direTeamID)
 			if err != nil {
 				log.Printf("  [!] не удалось получить героев команды Dire: %v", err)
 				return nil
@@ -158,7 +156,6 @@ func (c *Collector) CollectMatchData(ctx context.Context, matchID int64) (*model
 		})
 	}
 
-	// Player hero comfort and recent form.
 	for _, player := range match.Players {
 		if player.AccountID == 0 {
 			continue
@@ -168,7 +165,7 @@ func (c *Collector) CollectMatchData(ctx context.Context, matchID int64) (*model
 		heroID := player.HeroID
 
 		g.Go(func() error {
-			heroStats, err := c.client.GetPlayerHeroes(gctx, accountID)
+			heroStats, err := c.od.GetPlayerHeroes(gctx, accountID)
 			if err != nil {
 				log.Printf("  [!] не удалось получить героев игрока %d: %v", accountID, err)
 				return nil
@@ -183,7 +180,7 @@ func (c *Collector) CollectMatchData(ctx context.Context, matchID int64) (*model
 		})
 
 		g.Go(func() error {
-			recent, err := c.client.GetPlayerRecentMatches(gctx, accountID)
+			recent, err := c.od.GetPlayerRecentMatches(gctx, accountID)
 			if err != nil {
 				log.Printf("  [!] не удалось получить последние матчи игрока %d: %v", accountID, err)
 				return nil
@@ -194,10 +191,9 @@ func (c *Collector) CollectMatchData(ctx context.Context, matchID int64) (*model
 	}
 
 	if err := g.Wait(); err != nil {
-		return nil, fmt.Errorf("collecting data: %w", err)
+		return nil, fmt.Errorf("сбор данных: %w", err)
 	}
 
-	// Step 3: Post-processing — extract H2H.
 	if isPro && len(data.RadiantTeamMatches) > 0 {
 		data.HeadToHead = filterH2H(data.RadiantTeamMatches, direTeamID)
 	}
@@ -205,6 +201,40 @@ func (c *Collector) CollectMatchData(ctx context.Context, matchID int64) (*model
 	fmt.Println("[3/4] Сбор данных завершён.")
 
 	return data, nil
+}
+
+// fetchMatch tries multiple sources: OpenDota history -> OpenDota live -> Steam live.
+func (c *Collector) fetchMatch(ctx context.Context, matchID int64) (*models.Match, error) {
+	// 1. OpenDota — завершённые матчи.
+	match, err := c.od.GetMatch(ctx, matchID)
+	if err == nil {
+		return match, nil
+	}
+	fmt.Printf("  Матч не найден в истории OpenDota, ищу среди лайв-матчей...\n")
+
+	// 2. OpenDota /live.
+	live, liveErr := c.od.GetLiveGames(ctx)
+	if liveErr == nil {
+		for i := range live {
+			if int64(live[i].MatchID) == matchID {
+				fmt.Println("  Лайв-матч найден (OpenDota)!")
+				return live[i].ToMatch(), nil
+			}
+		}
+	}
+
+	// 3. Steam API (GetLiveLeagueGames).
+	if c.steam != nil {
+		fmt.Println("  Ищу среди лайв лиговых матчей Steam...")
+		steamMatch, steamErr := c.steam.FindLiveMatch(ctx, matchID)
+		if steamErr == nil {
+			fmt.Println("  Лайв-матч найден (Steam)!")
+			return steamMatch, nil
+		}
+		log.Printf("  [!] Steam: %v", steamErr)
+	}
+
+	return nil, fmt.Errorf("матч %d не найден ни в одном источнике", matchID)
 }
 
 func splitHeroesByTeam(match *models.Match) (radiant, dire []int) {
