@@ -1,0 +1,21 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "WebFetch(domain:docs.opendota.com)",
+      "WebFetch(domain:stratz.com)",
+      "WebFetch(domain:steamapi.xpaw.me)",
+      "Bash(cd:*)",
+      "WebFetch(domain:documenter.getpostman.com)",
+      "WebFetch(domain:medium.com)",
+      "WebFetch(domain:stratz.medium.com)",
+      "WebFetch(domain:github.com)",
+      "WebFetch(domain:gist.github.com)",
+      "WebFetch(domain:blog.opendota.com)",
+      "WebFetch(domain:www.opendota.com)",
+      "Bash(go version:*)",
+      "WebFetch(domain:api.opendota.com)",
+      "WebFetch(domain:openrouter.ai)"
+    ]
+  }
+}
