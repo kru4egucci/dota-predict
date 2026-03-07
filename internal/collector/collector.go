@@ -55,8 +55,9 @@ func (c *Collector) CollectMatchData(ctx context.Context, matchID int64) (*model
 		fmt.Println("[2/4] Публичный матч — сбор данных по героям и игрокам...")
 	}
 
-	// Шаг 2: Параллельный сбор данных.
+	// Шаг 2: Параллельный сбор данных (ограничиваем параллелизм чтобы не превысить rate limit).
 	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(3)
 
 	g.Go(func() error {
 		heroes, err := c.od.GetHeroes(gctx)

@@ -24,40 +24,59 @@ type Client struct {
 // NewClient creates a new OpenDota API client with built-in rate limiting.
 func NewClient() *Client {
 	return &Client{
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		httpClient: &http.Client{Timeout: 60 * time.Second},
 		limiter:    newRateLimiter(rateLimit, time.Minute),
 	}
 }
 
-// get performs a rate-limited GET request and decodes the JSON response into result.
-func (c *Client) get(ctx context.Context, path string, result interface{}) error {
-	if err := c.limiter.Wait(ctx); err != nil {
-		return fmt.Errorf("rate limiter: %w", err)
-	}
+const maxRetries = 3
 
+// get performs a rate-limited GET request with retry on 429 and decodes the JSON response into result.
+func (c *Client) get(ctx context.Context, path string, result interface{}) error {
 	url := baseURL + path
 
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return fmt.Errorf("creating request for %s: %w", path, err)
+	for attempt := range maxRetries {
+		if err := c.limiter.Wait(ctx); err != nil {
+			return fmt.Errorf("rate limiter: %w", err)
+		}
+
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return fmt.Errorf("creating request for %s: %w", path, err)
+		}
+
+		resp, err := c.httpClient.Do(req)
+		if err != nil {
+			return fmt.Errorf("requesting %s: %w", path, err)
+		}
+
+		if resp.StatusCode == http.StatusTooManyRequests {
+			resp.Body.Close()
+			backoff := time.Duration(attempt+1) * 10 * time.Second
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-time.After(backoff):
+				continue
+			}
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			return fmt.Errorf("API %s returned status %d: %s", path, resp.StatusCode, string(body))
+		}
+
+		err = json.NewDecoder(resp.Body).Decode(result)
+		resp.Body.Close()
+		if err != nil {
+			return fmt.Errorf("decoding response from %s: %w", path, err)
+		}
+
+		return nil
 	}
 
-	resp, err := c.httpClient.Do(req)
-	if err != nil {
-		return fmt.Errorf("requesting %s: %w", path, err)
-	}
-	defer resp.Body.Close()
-
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return fmt.Errorf("API %s returned status %d: %s", path, resp.StatusCode, string(body))
-	}
-
-	if err := json.NewDecoder(resp.Body).Decode(result); err != nil {
-		return fmt.Errorf("decoding response from %s: %w", path, err)
-	}
-
-	return nil
+	return fmt.Errorf("API %s: rate limit exceeded after %d retries", path, maxRetries)
 }
 
 // rateLimiter implements a token-bucket rate limiter.

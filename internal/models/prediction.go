@@ -44,8 +44,25 @@ func (cd *CollectedData) SetPlayerRecent(accountID int, matches []PlayerRecentMa
 type Prediction struct {
 	RadiantTeamName string
 	DireTeamName    string
-	RadiantWinProb  string
-	DireWinProb     string
-	PredictedWinner string
 	Analysis        string
+	DraftAnalysis   string
+	Betting         BettingInfo
+}
+
+// BettingInfo contains parsed probabilities and calculated betting odds.
+type BettingInfo struct {
+	// Main analysis.
+	RadiantWinProb float64 // 0-100
+	DireWinProb    float64 // 0-100
+	Confidence     string  // Низкая/Средняя/Высокая
+
+	// Draft-only analysis.
+	DraftRadiantProb float64
+	DraftDireProb    float64
+
+	// Calculated odds.
+	RadiantMinOdds      float64 // fair value (break-even)
+	RadiantComfortOdds  float64 // with margin based on confidence
+	DireMinOdds         float64
+	DireComfortOdds     float64
 }

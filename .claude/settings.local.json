@@ -15,7 +15,8 @@
       "WebFetch(domain:www.opendota.com)",
       "Bash(go version:*)",
       "WebFetch(domain:api.opendota.com)",
-      "WebFetch(domain:openrouter.ai)"
+      "WebFetch(domain:openrouter.ai)",
+      "Bash(go build:*)"
     ]
   }
 }
