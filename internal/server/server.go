@@ -273,8 +273,7 @@ func (s *Server) buildMessage(pred *models.Prediction, odds *models.MatchOdds, m
 	if len(analysis) > 1500 {
 		analysis = analysis[:1500] + "..."
 	}
-	// Strip markdown bold (**) for Telegram HTML.
-	analysis = strings.ReplaceAll(analysis, "**", "")
+	analysis = telegram.MDToTelegramHTML(analysis)
 	sb.WriteString(analysis)
 
 	return sb.String()
