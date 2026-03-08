@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"strings"
 	"time"
@@ -38,15 +39,28 @@ func NewClient(apiKey string) *Client {
 // FindMatchOdds searches for a Dota 2 fixture matching the given team names
 // and returns the best available odds.
 func (c *Client) FindMatchOdds(ctx context.Context, team1, team2 string) (*models.MatchOdds, error) {
+	log := slog.With("team1", team1, "team2", team2)
+
+	log.Debug("oddspapi: поиск фикстуры")
 	fixture, err := c.findFixture(ctx, team1, team2)
 	if err != nil {
+		log.Warn("oddspapi: фикстура не найдена", "error", err)
 		return nil, err
 	}
+	log.Debug("oddspapi: фикстура найдена", "fixture_id", fixture.ID, "fixture_name", fixture.Name)
 
 	odds, err := c.getOdds(ctx, fixture)
 	if err != nil {
+		log.Warn("oddspapi: не удалось получить коэффициенты", "fixture_id", fixture.ID, "error", err)
 		return nil, err
 	}
+
+	log.Info("oddspapi: коэффициенты получены",
+		"fixture_id", fixture.ID,
+		"bookmaker", odds.Bookmaker,
+		"team1_name", odds.Team1Name, "team1_odds", odds.Team1Odds,
+		"team2_name", odds.Team2Name, "team2_odds", odds.Team2Odds,
+	)
 
 	return odds, nil
 }
@@ -60,6 +74,8 @@ func (c *Client) findFixture(ctx context.Context, team1, team2 string) (*models.
 	if err := c.get(ctx, url, &resp); err != nil {
 		return nil, fmt.Errorf("fetch fixtures: %w", err)
 	}
+
+	slog.Debug("oddspapi: фикстуры получены", "count", len(resp.Data))
 
 	t1 := strings.ToLower(team1)
 	t2 := strings.ToLower(team2)
@@ -111,6 +127,8 @@ func (c *Client) extractOdds(data *models.OddsData, fixture *models.OddsFixture)
 			bookmakers = append(bookmakers, bm)
 		}
 	}
+
+	slog.Debug("oddspapi: доступные букмекеры", "bookmakers", bookmakers)
 
 	for _, bm := range bookmakers {
 		entry, ok := data.BookmakerOdds[bm]
@@ -165,16 +183,33 @@ func (c *Client) get(ctx context.Context, url string, result interface{}) error 
 		return err
 	}
 
+	start := time.Now()
 	resp, err := c.httpClient.Do(req)
+	elapsed := time.Since(start)
+
 	if err != nil {
+		slog.Error("oddspapi: ошибка HTTP запроса",
+			"duration", elapsed.String(),
+			"error", err,
+		)
 		return err
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		slog.Error("oddspapi: неуспешный HTTP статус",
+			"status", resp.StatusCode,
+			"body", string(body),
+			"duration", elapsed.String(),
+		)
 		return fmt.Errorf("OddsPapi API returned %d: %s", resp.StatusCode, string(body))
 	}
+
+	slog.Debug("oddspapi: запрос выполнен",
+		"status", resp.StatusCode,
+		"duration", elapsed.String(),
+	)
 
 	return json.NewDecoder(resp.Body).Decode(result)
 }

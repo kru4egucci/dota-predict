@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"sync"
 	"time"
@@ -45,14 +46,28 @@ func (c *Client) get(ctx context.Context, path string, result interface{}) error
 			return fmt.Errorf("creating request for %s: %w", path, err)
 		}
 
+		start := time.Now()
 		resp, err := c.httpClient.Do(req)
+		elapsed := time.Since(start)
+
 		if err != nil {
+			slog.Error("opendota: ошибка HTTP запроса",
+				"path", path,
+				"attempt", attempt+1,
+				"duration", elapsed.String(),
+				"error", err,
+			)
 			return fmt.Errorf("requesting %s: %w", path, err)
 		}
 
 		if resp.StatusCode == http.StatusTooManyRequests {
 			resp.Body.Close()
 			backoff := time.Duration(attempt+1) * 10 * time.Second
+			slog.Warn("opendota: rate limit (429), ожидание",
+				"path", path,
+				"attempt", attempt+1,
+				"backoff", backoff.String(),
+			)
 			select {
 			case <-ctx.Done():
 				return ctx.Err()
@@ -64,18 +79,38 @@ func (c *Client) get(ctx context.Context, path string, result interface{}) error
 		if resp.StatusCode != http.StatusOK {
 			body, _ := io.ReadAll(resp.Body)
 			resp.Body.Close()
+			slog.Error("opendota: неуспешный HTTP статус",
+				"path", path,
+				"status", resp.StatusCode,
+				"body", string(body),
+				"duration", elapsed.String(),
+			)
 			return fmt.Errorf("API %s returned status %d: %s", path, resp.StatusCode, string(body))
 		}
 
 		err = json.NewDecoder(resp.Body).Decode(result)
 		resp.Body.Close()
 		if err != nil {
+			slog.Error("opendota: ошибка декодирования JSON",
+				"path", path,
+				"duration", elapsed.String(),
+				"error", err,
+			)
 			return fmt.Errorf("decoding response from %s: %w", path, err)
 		}
 
+		slog.Debug("opendota: запрос выполнен",
+			"path", path,
+			"status", resp.StatusCode,
+			"duration", elapsed.String(),
+		)
 		return nil
 	}
 
+	slog.Error("opendota: все попытки исчерпаны",
+		"path", path,
+		"max_retries", maxRetries,
+	)
 	return fmt.Errorf("API %s: rate limit exceeded after %d retries", path, maxRetries)
 }
 

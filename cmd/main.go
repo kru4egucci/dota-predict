@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"os"
 	"os/signal"
 	"strconv"
@@ -17,6 +18,7 @@ import (
 	"dota-predict/internal/collector"
 	"dota-predict/internal/config"
 	"dota-predict/internal/display"
+	"dota-predict/internal/logger"
 	"dota-predict/internal/server"
 )
 
@@ -26,13 +28,23 @@ func main() {
 		os.Exit(1)
 	}
 
+	isServer := os.Args[1] == "server"
+	logger.Setup(isServer)
+
 	cfg, err := config.Load()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Ошибка: %v\n", err)
+		slog.Error("не удалось загрузить конфигурацию", "error", err)
 		os.Exit(1)
 	}
 
-	if os.Args[1] == "server" {
+	slog.Info("конфигурация загружена",
+		"model", cfg.OpenRouterModel,
+		"steam_configured", cfg.SteamAPIKey != "",
+		"oddspapi_configured", cfg.OddsPapiAPIKey != "",
+		"mode", os.Args[1],
+	)
+
+	if isServer {
 		runServer(cfg)
 	} else {
 		runAnalysis(cfg, os.Args[1])
@@ -48,9 +60,11 @@ func printUsage() {
 func runAnalysis(cfg *config.Config, matchIDStr string) {
 	matchID, err := strconv.ParseInt(matchIDStr, 10, 64)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Ошибка: некорректный match_id %q: %v\n", matchIDStr, err)
+		slog.Error("некорректный match_id", "input", matchIDStr, "error", err)
 		os.Exit(1)
 	}
+
+	log := slog.With("match_id", matchID)
 
 	odClient := opendota.NewClient()
 	steamClient := steam.NewClient(cfg.SteamAPIKey)
@@ -58,26 +72,29 @@ func runAnalysis(cfg *config.Config, matchIDStr string) {
 
 	ctx := context.Background()
 
+	log.Info("начинаю сбор данных")
 	coll := collector.New(odClient, steamClient)
 	data, err := coll.CollectMatchData(ctx, matchID)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Ошибка сбора данных: %v\n", err)
+		log.Error("ошибка сбора данных", "error", err)
 		os.Exit(1)
 	}
 
+	log.Info("начинаю анализ")
 	ana := analyzer.New(orClient)
 	prediction, err := ana.Predict(ctx, data)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "Ошибка анализа матча: %v\n", err)
+		log.Error("ошибка анализа матча", "error", err)
 		os.Exit(1)
 	}
 
+	log.Info("анализ завершён")
 	display.PrintPrediction(prediction)
 }
 
 func runServer(cfg *config.Config) {
 	if err := cfg.ValidateServer(); err != nil {
-		fmt.Fprintf(os.Stderr, "Ошибка конфигурации сервера: %v\n", err)
+		slog.Error("ошибка конфигурации сервера", "error", err)
 		os.Exit(1)
 	}
 
@@ -97,7 +114,7 @@ func runServer(cfg *config.Config) {
 	defer cancel()
 
 	if err := srv.Run(ctx); err != nil {
-		fmt.Fprintf(os.Stderr, "Ошибка сервера: %v\n", err)
+		slog.Error("ошибка сервера", "error", err)
 		os.Exit(1)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 )
@@ -48,6 +49,11 @@ func (c *Client) SendMessage(ctx context.Context, text string) error {
 		return c.sendOne(ctx, text)
 	}
 
+	slog.Debug("telegram: сообщение слишком длинное, разбиваю на части",
+		"total_length", len(text),
+	)
+
+	part := 0
 	// Split by newlines, trying not to break mid-line.
 	for len(text) > 0 {
 		chunk := text
@@ -65,9 +71,19 @@ func (c *Client) SendMessage(ctx context.Context, text string) error {
 		} else {
 			text = ""
 		}
+		part++
 		if err := c.sendOne(ctx, chunk); err != nil {
+			slog.Error("telegram: ошибка отправки части сообщения",
+				"part", part,
+				"chunk_length", len(chunk),
+				"error", err,
+			)
 			return err
 		}
+		slog.Debug("telegram: часть сообщения отправлена",
+			"part", part,
+			"chunk_length", len(chunk),
+		)
 	}
 	return nil
 }
@@ -91,14 +107,26 @@ func (c *Client) sendOne(ctx context.Context, text string) error {
 	}
 	req.Header.Set("Content-Type", "application/json")
 
+	start := time.Now()
 	resp, err := c.httpClient.Do(req)
+	elapsed := time.Since(start)
+
 	if err != nil {
+		slog.Error("telegram: ошибка HTTP запроса",
+			"duration", elapsed.String(),
+			"error", err,
+		)
 		return fmt.Errorf("send telegram message: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
+		slog.Error("telegram: неуспешный HTTP статус",
+			"status", resp.StatusCode,
+			"body", string(respBody),
+			"duration", elapsed.String(),
+		)
 		return fmt.Errorf("telegram API returned %d: %s", resp.StatusCode, string(respBody))
 	}
 
@@ -107,8 +135,14 @@ func (c *Client) sendOne(ctx context.Context, text string) error {
 		return fmt.Errorf("decode telegram response: %w", err)
 	}
 	if !apiResp.OK {
+		slog.Error("telegram: API ошибка", "description", apiResp.Description)
 		return fmt.Errorf("telegram API error: %s", apiResp.Description)
 	}
+
+	slog.Debug("telegram: сообщение отправлено",
+		"message_length", len(text),
+		"duration", elapsed.String(),
+	)
 
 	return nil
 }

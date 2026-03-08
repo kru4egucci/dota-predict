@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"log/slog"
 	"net/http"
 	"time"
 
@@ -38,18 +39,18 @@ type liveResponse struct {
 }
 
 type steamLiveGame struct {
-	MatchID      int64              `json:"match_id"`
-	LobbyID      int64              `json:"lobby_id"`
-	GameTime     int                `json:"game_time"`
-	GameMode     int                `json:"game_mode"`
-	LobbyType    int                `json:"lobby_type"`
-	LeagueID     int                `json:"league_id"`
-	RadiantScore int                `json:"radiant_series_wins"`
-	DireScore    int                `json:"dire_series_wins"`
-	RadiantTeam  steamTeam          `json:"radiant_team"`
-	DireTeam     steamTeam          `json:"dire_team"`
-	Players      []steamLivePlayer  `json:"players"`
-	Scoreboard   *steamScoreboard   `json:"scoreboard"`
+	MatchID      int64             `json:"match_id"`
+	LobbyID      int64             `json:"lobby_id"`
+	GameTime     int               `json:"game_time"`
+	GameMode     int               `json:"game_mode"`
+	LobbyType    int               `json:"lobby_type"`
+	LeagueID     int               `json:"league_id"`
+	RadiantScore int               `json:"radiant_series_wins"`
+	DireScore    int               `json:"dire_series_wins"`
+	RadiantTeam  steamTeam         `json:"radiant_team"`
+	DireTeam     steamTeam         `json:"dire_team"`
+	Players      []steamLivePlayer `json:"players"`
+	Scoreboard   *steamScoreboard  `json:"scoreboard"`
 }
 
 type steamTeam struct {
@@ -66,14 +67,14 @@ type steamLivePlayer struct {
 }
 
 type steamScoreboard struct {
-	Duration float64          `json:"duration"`
-	Radiant  steamTeamScore   `json:"radiant"`
-	Dire     steamTeamScore   `json:"dire"`
+	Duration float64        `json:"duration"`
+	Radiant  steamTeamScore `json:"radiant"`
+	Dire     steamTeamScore `json:"dire"`
 }
 
 type steamTeamScore struct {
-	Score   int                   `json:"score"`
-	Players []steamPlayerScore    `json:"players"`
+	Score   int                `json:"score"`
+	Players []steamPlayerScore `json:"players"`
 }
 
 type steamPlayerScore struct {
@@ -106,8 +107,15 @@ type LiveLeaguePlayer struct {
 
 // GetLiveLeagueGames returns all currently live league (tournament) games.
 func (c *Client) GetLiveLeagueGames(ctx context.Context) ([]LiveLeagueGame, error) {
+	start := time.Now()
 	games, err := c.fetchLiveGames(ctx)
+	elapsed := time.Since(start)
+
 	if err != nil {
+		slog.Error("steam: ошибка получения лайв-матчей",
+			"duration", elapsed.String(),
+			"error", err,
+		)
 		return nil, err
 	}
 
@@ -151,6 +159,11 @@ func (c *Client) GetLiveLeagueGames(ctx context.Context) ([]LiveLeagueGame, erro
 		result = append(result, lg)
 	}
 
+	slog.Debug("steam: лайв-матчи получены",
+		"total_games", len(result),
+		"duration", elapsed.String(),
+	)
+
 	return result, nil
 }
 
@@ -163,6 +176,11 @@ func (c *Client) FindLiveMatch(ctx context.Context, matchID int64) (*models.Matc
 
 	for _, game := range games {
 		if game.MatchID == matchID {
+			slog.Debug("steam: лайв-матч найден",
+				"match_id", matchID,
+				"radiant", game.RadiantTeam.TeamName,
+				"dire", game.DireTeam.TeamName,
+			)
 			return convertSteamLiveGame(&game), nil
 		}
 	}
@@ -178,7 +196,10 @@ func (c *Client) fetchLiveGames(ctx context.Context) ([]steamLiveGame, error) {
 		return nil, fmt.Errorf("creating request: %w", err)
 	}
 
+	start := time.Now()
 	resp, err := c.httpClient.Do(req)
+	elapsed := time.Since(start)
+
 	if err != nil {
 		return nil, fmt.Errorf("requesting live league games: %w", err)
 	}
@@ -186,6 +207,11 @@ func (c *Client) fetchLiveGames(ctx context.Context) ([]steamLiveGame, error) {
 
 	if resp.StatusCode != http.StatusOK {
 		body, _ := io.ReadAll(resp.Body)
+		slog.Error("steam: неуспешный HTTP статус",
+			"status", resp.StatusCode,
+			"body", string(body),
+			"duration", elapsed.String(),
+		)
 		return nil, fmt.Errorf("Steam API returned status %d: %s", resp.StatusCode, string(body))
 	}
 
@@ -193,6 +219,11 @@ func (c *Client) fetchLiveGames(ctx context.Context) ([]steamLiveGame, error) {
 	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
 		return nil, fmt.Errorf("decoding response: %w", err)
 	}
+
+	slog.Debug("steam: API ответ получен",
+		"games_count", len(result.Result.Games),
+		"duration", elapsed.String(),
+	)
 
 	return result.Result.Games, nil
 }

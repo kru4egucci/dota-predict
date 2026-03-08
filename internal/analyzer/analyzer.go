@@ -3,6 +3,8 @@ package analyzer
 import (
 	"context"
 	"fmt"
+	"log/slog"
+	"time"
 
 	"dota-predict/internal/api/openrouter"
 	"dota-predict/internal/models"
@@ -39,6 +41,11 @@ func (a *Analyzer) Predict(ctx context.Context, data *models.CollectedData) (*mo
 	prompt := buildPrompt(data)
 	draftPrompt := buildDraftPrompt(data)
 
+	slog.Info("отправка данных в LLM [4/4]",
+		"prompt_length", len(prompt),
+		"draft_prompt_length", len(draftPrompt),
+	)
+
 	type llmResult struct {
 		text string
 		err  error
@@ -47,37 +54,49 @@ func (a *Analyzer) Predict(ctx context.Context, data *models.CollectedData) (*mo
 	mainCh := make(chan llmResult, 1)
 	draftCh := make(chan llmResult, 1)
 
-	fmt.Println("[4/4] Отправка данных в LLM для анализа...")
-
 	go func() {
+		start := time.Now()
 		resp, err := a.client.ChatCompletion(ctx, []models.ChatMessage{
 			{Role: "system", Content: systemPrompt},
 			{Role: "user", Content: prompt},
 		})
 		if err != nil {
+			slog.Error("ошибка основного LLM анализа", "error", err, "duration", time.Since(start).String())
 			mainCh <- llmResult{err: fmt.Errorf("LLM analysis: %w", err)}
 			return
 		}
 		if len(resp.Choices) == 0 {
+			slog.Error("LLM вернул пустой ответ (основной анализ)", "duration", time.Since(start).String())
 			mainCh <- llmResult{err: fmt.Errorf("LLM returned no response")}
 			return
 		}
+		slog.Info("основной LLM анализ завершён",
+			"duration", time.Since(start).String(),
+			"response_length", len(resp.Choices[0].Message.Content),
+		)
 		mainCh <- llmResult{text: resp.Choices[0].Message.Content}
 	}()
 
 	go func() {
+		start := time.Now()
 		resp, err := a.client.ChatCompletion(ctx, []models.ChatMessage{
 			{Role: "system", Content: draftSystemPrompt},
 			{Role: "user", Content: draftPrompt},
 		})
 		if err != nil {
+			slog.Warn("ошибка LLM анализа драфта", "error", err, "duration", time.Since(start).String())
 			draftCh <- llmResult{err: fmt.Errorf("LLM draft analysis: %w", err)}
 			return
 		}
 		if len(resp.Choices) == 0 {
+			slog.Warn("LLM вернул пустой ответ (драфт)", "duration", time.Since(start).String())
 			draftCh <- llmResult{err: fmt.Errorf("LLM returned no response for draft")}
 			return
 		}
+		slog.Info("LLM анализ драфта завершён",
+			"duration", time.Since(start).String(),
+			"response_length", len(resp.Choices[0].Message.Content),
+		)
 		draftCh <- llmResult{text: resp.Choices[0].Message.Content}
 	}()
 
@@ -92,7 +111,7 @@ func (a *Analyzer) Predict(ctx context.Context, data *models.CollectedData) (*mo
 	if draftRes.err == nil {
 		draftText = draftRes.text
 	} else {
-		fmt.Printf("  [!] анализ драфта не удался: %v\n", draftRes.err)
+		slog.Warn("анализ драфта не удался, продолжаю без него", "error", draftRes.err)
 	}
 
 	prediction := &models.Prediction{
@@ -116,6 +135,14 @@ func (a *Analyzer) Predict(ctx context.Context, data *models.CollectedData) (*mo
 	} else {
 		prediction.DireTeamName = "Dire"
 	}
+
+	slog.Info("прогноз сформирован",
+		"radiant", prediction.RadiantTeamName,
+		"dire", prediction.DireTeamName,
+		"radiant_prob", prediction.Betting.RadiantWinProb,
+		"dire_prob", prediction.Betting.DireWinProb,
+		"confidence", prediction.Betting.Confidence,
+	)
 
 	return prediction, nil
 }

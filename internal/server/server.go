@@ -3,7 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
-	"log"
+	"log/slog"
 	"strings"
 	"sync"
 	"time"
@@ -57,8 +57,12 @@ func New(
 
 // Run starts the polling loop. Blocks until context is cancelled.
 func (s *Server) Run(ctx context.Context) error {
-	log.Println("[server] Запущен мониторинг тир-1 матчей через Steam API...")
-	log.Printf("[server] Отслеживаемые команды: %v", tier1TeamNames())
+	teamNames := tier1TeamNames()
+	slog.Info("сервер запущен",
+		"poll_interval", pollInterval.String(),
+		"tracked_teams_count", len(teamNames),
+		"tracked_teams", teamNames,
+	)
 
 	// Run immediately on start, then every pollInterval.
 	s.tick(ctx)
@@ -69,7 +73,7 @@ func (s *Server) Run(ctx context.Context) error {
 	for {
 		select {
 		case <-ctx.Done():
-			log.Println("[server] Остановка...")
+			slog.Info("сервер остановлен", "reason", ctx.Err())
 			return nil
 		case <-ticker.C:
 			s.tick(ctx)
@@ -78,11 +82,24 @@ func (s *Server) Run(ctx context.Context) error {
 }
 
 func (s *Server) tick(ctx context.Context) {
+	slog.Debug("опрос Steam API")
+
+	start := time.Now()
 	games, err := s.steamClient.GetLiveLeagueGames(ctx)
+	elapsed := time.Since(start)
+
 	if err != nil {
-		log.Printf("[server] Ошибка получения лайв-матчей Steam: %v", err)
+		slog.Error("ошибка получения лайв-матчей Steam",
+			"error", err,
+			"duration", elapsed.String(),
+		)
 		return
 	}
+
+	slog.Debug("получены лайв-матчи",
+		"total_games", len(games),
+		"duration", elapsed.String(),
+	)
 
 	for i := range games {
 		g := &games[i]
@@ -91,7 +108,17 @@ func (s *Server) tick(ctx context.Context) {
 			continue
 		}
 
+		log := slog.With(
+			"match_id", g.MatchID,
+			"radiant", g.RadiantTeamName,
+			"dire", g.DireTeamName,
+			"league_id", g.LeagueID,
+		)
+
 		if !isDraftComplete(g) {
+			log.Debug("тир-1 матч найден, но драфт не завершён",
+				"players_count", len(g.Players),
+			)
 			continue
 		}
 
@@ -106,8 +133,9 @@ func (s *Server) tick(ctx context.Context) {
 			continue
 		}
 
-		log.Printf("[server] Найден тир-1 матч %d: %s vs %s — запуск анализа",
-			g.MatchID, g.RadiantTeamName, g.DireTeamName)
+		log.Info("тир-1 матч с завершённым драфтом — запуск анализа",
+			"processed_total", len(s.processed),
+		)
 
 		go s.processMatch(ctx, g)
 	}
@@ -132,6 +160,15 @@ func (s *Server) processMatch(ctx context.Context, game *steam.LiveLeagueGame) {
 	radiantName := game.RadiantTeamName
 	direName := game.DireTeamName
 
+	log := slog.With(
+		"match_id", matchID,
+		"radiant", radiantName,
+		"dire", direName,
+	)
+
+	log.Info("начало обработки матча")
+	matchStart := time.Now()
+
 	type analysisResult struct {
 		prediction *models.Prediction
 		err        error
@@ -146,34 +183,69 @@ func (s *Server) processMatch(ctx context.Context, game *steam.LiveLeagueGame) {
 
 	// Run analysis.
 	go func() {
+		start := time.Now()
+		log.Info("сбор данных для анализа")
+
 		data, err := s.coll.CollectMatchData(ctx, matchID)
 		if err != nil {
+			log.Error("ошибка сбора данных", "error", err, "duration", time.Since(start).String())
 			analysisCh <- analysisResult{err: fmt.Errorf("сбор данных: %w", err)}
 			return
 		}
+		log.Info("данные собраны", "duration", time.Since(start).String())
+
+		llmStart := time.Now()
+		log.Info("запуск LLM анализа")
+
 		pred, err := s.ana.Predict(ctx, data)
 		if err != nil {
+			log.Error("ошибка LLM анализа", "error", err, "duration", time.Since(llmStart).String())
 			analysisCh <- analysisResult{err: fmt.Errorf("анализ: %w", err)}
 			return
 		}
+		log.Info("LLM анализ завершён",
+			"duration", time.Since(llmStart).String(),
+			"radiant_prob", pred.Betting.RadiantWinProb,
+			"dire_prob", pred.Betting.DireWinProb,
+			"confidence", pred.Betting.Confidence,
+		)
 		analysisCh <- analysisResult{prediction: pred}
 	}()
 
 	// Fetch odds in parallel.
 	go func() {
 		if s.oddsClient == nil {
+			log.Debug("OddsPapi не настроен, пропускаю получение коэффициентов")
 			oddsCh <- oddsResult{err: fmt.Errorf("OddsPapi не настроен")}
 			return
 		}
+		start := time.Now()
+		log.Info("запрос коэффициентов у букмекеров")
+
 		odds, err := s.oddsClient.FindMatchOdds(ctx, radiantName, direName)
-		oddsCh <- oddsResult{odds: odds, err: err}
+		if err != nil {
+			log.Warn("не удалось получить коэффициенты",
+				"error", err,
+				"duration", time.Since(start).String(),
+			)
+			oddsCh <- oddsResult{err: err}
+			return
+		}
+		log.Info("коэффициенты получены",
+			"bookmaker", odds.Bookmaker,
+			"team1", odds.Team1Name, "odds1", odds.Team1Odds,
+			"team2", odds.Team2Name, "odds2", odds.Team2Odds,
+			"duration", time.Since(start).String(),
+		)
+		oddsCh <- oddsResult{odds: odds}
 	}()
 
 	aRes := <-analysisCh
 	oRes := <-oddsCh
 
 	if aRes.err != nil {
-		log.Printf("[server] Ошибка анализа матча %d: %v", matchID, aRes.err)
+		log.Error("анализ матча провалился", "error", aRes.err,
+			"total_duration", time.Since(matchStart).String())
 		s.sendError(ctx, matchID, radiantName, direName, aRes.err)
 		return
 	}
@@ -181,15 +253,20 @@ func (s *Server) processMatch(ctx context.Context, game *steam.LiveLeagueGame) {
 	prediction := aRes.prediction
 
 	if oRes.err != nil {
-		log.Printf("[server] Не удалось получить коэффициенты для матча %d: %v", matchID, oRes.err)
+		log.Warn("матч обработан без коэффициентов", "odds_error", oRes.err)
 	}
 
 	msg := s.buildMessage(prediction, oRes.odds, matchID)
 
+	log.Debug("отправка уведомления в Telegram", "message_length", len(msg))
 	if err := s.tgClient.SendMessage(ctx, msg); err != nil {
-		log.Printf("[server] Ошибка отправки в Telegram для матча %d: %v", matchID, err)
+		log.Error("ошибка отправки в Telegram", "error", err,
+			"total_duration", time.Since(matchStart).String())
 	} else {
-		log.Printf("[server] Уведомление отправлено для матча %d", matchID)
+		log.Info("обработка матча завершена, уведомление отправлено",
+			"total_duration", time.Since(matchStart).String(),
+			"has_bet", oRes.odds != nil && prediction.Betting.RadiantWinProb > 0,
+		)
 	}
 }
 
@@ -222,6 +299,12 @@ func (s *Server) buildMessage(pred *models.Prediction, odds *models.MatchOdds, m
 	}
 
 	if hasBet {
+		slog.Info("найдена ставка",
+			"match_id", matchID,
+			"bet_team", betTeam,
+			"book_odds", betOdds,
+			"comfort_odds", comfortOdds,
+		)
 		sb.WriteString(fmt.Sprintf("<b>СТАВКА: %s vs %s</b>\n", pred.RadiantTeamName, pred.DireTeamName))
 		sb.WriteString(fmt.Sprintf("Match ID: %d\n\n", matchID))
 		sb.WriteString(fmt.Sprintf("Ставка на: <b>%s</b>\n", betTeam))
@@ -309,7 +392,11 @@ func fuzzyContains(a, b string) bool {
 func (s *Server) sendError(ctx context.Context, matchID int64, radiant, dire string, err error) {
 	msg := fmt.Sprintf("<b>ОШИБКА: %s vs %s</b>\nMatch ID: %d\n\n%v", radiant, dire, matchID, err)
 	if sendErr := s.tgClient.SendMessage(ctx, msg); sendErr != nil {
-		log.Printf("[server] Не удалось отправить ошибку в Telegram: %v", sendErr)
+		slog.Error("не удалось отправить ошибку в Telegram",
+			"match_id", matchID,
+			"original_error", err,
+			"send_error", sendErr,
+		)
 	}
 }
 
