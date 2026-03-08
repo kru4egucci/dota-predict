@@ -11,6 +11,7 @@ import (
 type Config struct {
 	OpenRouterAPIKey string
 	OpenRouterModel  string
+	OpenDotaAPIKey   string
 	SteamAPIKey      string
 	OddsPapiAPIKey   string
 	TelegramBotToken string
@@ -35,6 +36,7 @@ func Load() (*Config, error) {
 	return &Config{
 		OpenRouterAPIKey: apiKey,
 		OpenRouterModel:  model,
+		OpenDotaAPIKey:   os.Getenv("OPENDOTA_API_KEY"),
 		SteamAPIKey:      os.Getenv("STEAM_API_KEY"),
 		OddsPapiAPIKey:   os.Getenv("ODDSPAPI_API_KEY"),
 		TelegramBotToken: os.Getenv("TELEGRAM_BOT_TOKEN"),

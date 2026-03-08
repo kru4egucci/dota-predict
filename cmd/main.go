@@ -66,7 +66,7 @@ func runAnalysis(cfg *config.Config, matchIDStr string) {
 
 	log := slog.With("match_id", matchID)
 
-	odClient := opendota.NewClient()
+	odClient := opendota.NewClient(cfg.OpenDotaAPIKey)
 	steamClient := steam.NewClient(cfg.SteamAPIKey)
 	orClient := openrouter.NewClient(cfg.OpenRouterAPIKey, cfg.OpenRouterModel)
 
@@ -98,7 +98,7 @@ func runServer(cfg *config.Config) {
 		os.Exit(1)
 	}
 
-	odClient := opendota.NewClient()
+	odClient := opendota.NewClient(cfg.OpenDotaAPIKey)
 	steamClient := steam.NewClient(cfg.SteamAPIKey)
 	orClient := openrouter.NewClient(cfg.OpenRouterAPIKey, cfg.OpenRouterModel)
 	tgClient := telegram.NewClient(cfg.TelegramBotToken, cfg.TelegramChatID)

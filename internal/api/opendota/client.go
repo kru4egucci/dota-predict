@@ -7,6 +7,7 @@ import (
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"sync"
 	"time"
 )
@@ -20,13 +21,16 @@ const (
 type Client struct {
 	httpClient *http.Client
 	limiter    *rateLimiter
+	apiKey     string
 }
 
 // NewClient creates a new OpenDota API client with built-in rate limiting.
-func NewClient() *Client {
+// If apiKey is provided, it is appended to all requests (paid plan, higher limits).
+func NewClient(apiKey string) *Client {
 	return &Client{
 		httpClient: &http.Client{Timeout: 60 * time.Second},
 		limiter:    newRateLimiter(rateLimit, time.Minute),
+		apiKey:     apiKey,
 	}
 }
 
@@ -35,6 +39,13 @@ const maxRetries = 3
 // get performs a rate-limited GET request with retry on 429 and decodes the JSON response into result.
 func (c *Client) get(ctx context.Context, path string, result interface{}) error {
 	url := baseURL + path
+	if c.apiKey != "" {
+		sep := "?"
+		if strings.Contains(path, "?") {
+			sep = "&"
+		}
+		url += sep + "api_key=" + c.apiKey
+	}
 
 	for attempt := range maxRetries {
 		if err := c.limiter.Wait(ctx); err != nil {

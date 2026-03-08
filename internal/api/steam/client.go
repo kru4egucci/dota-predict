@@ -130,16 +130,9 @@ func (c *Client) GetLiveLeagueGames(ctx context.Context) ([]LiveLeagueGame, erro
 			DireTeamName:    g.DireTeam.TeamName,
 		}
 
-		for _, p := range g.Players {
-			lg.Players = append(lg.Players, LiveLeaguePlayer{
-				AccountID: p.AccountID,
-				HeroID:    p.HeroID,
-				Team:      p.Team,
-			})
-		}
-
-		// If players list is empty but scoreboard has data, use scoreboard.
-		if len(lg.Players) == 0 && g.Scoreboard != nil {
+		// Prefer scoreboard players — the top-level Players array includes
+		// admins, casters, and observers, not just the 10 actual players.
+		if g.Scoreboard != nil {
 			for _, p := range g.Scoreboard.Radiant.Players {
 				lg.Players = append(lg.Players, LiveLeaguePlayer{
 					AccountID: p.AccountID,
@@ -153,6 +146,18 @@ func (c *Client) GetLiveLeagueGames(ctx context.Context) ([]LiveLeagueGame, erro
 					HeroID:    p.HeroID,
 					Team:      1,
 				})
+			}
+		} else {
+			// Fallback: during draft phase scoreboard may not exist yet,
+			// filter top-level players to team 0/1 only (skip spectators).
+			for _, p := range g.Players {
+				if p.Team == 0 || p.Team == 1 {
+					lg.Players = append(lg.Players, LiveLeaguePlayer{
+						AccountID: p.AccountID,
+						HeroID:    p.HeroID,
+						Team:      p.Team,
+					})
+				}
 			}
 		}
 
@@ -250,23 +255,9 @@ func convertSteamLiveGame(g *steamLiveGame) *models.Match {
 		m.DireScore = g.Scoreboard.Dire.Score
 	}
 
-	for _, p := range g.Players {
-		isRadiant := p.Team == 0
-		slot := 0
-		if !isRadiant {
-			slot = 128
-		}
-		m.Players = append(m.Players, models.MatchPlayer{
-			AccountID:  p.AccountID,
-			PlayerSlot: slot,
-			HeroID:     p.HeroID,
-			Name:       p.Name,
-			IsRadiant:  isRadiant,
-		})
-	}
-
-	// If players came without hero_id (draft phase), try scoreboard.
-	if g.Scoreboard != nil && len(m.Players) == 0 {
+	// Prefer scoreboard players — the top-level Players array includes
+	// admins, casters, and observers, not just the 10 actual players.
+	if g.Scoreboard != nil {
 		for _, p := range g.Scoreboard.Radiant.Players {
 			m.Players = append(m.Players, models.MatchPlayer{
 				AccountID: p.AccountID,
@@ -280,6 +271,25 @@ func convertSteamLiveGame(g *steamLiveGame) *models.Match {
 				HeroID:     p.HeroID,
 				PlayerSlot: 128,
 				IsRadiant:  false,
+			})
+		}
+	} else {
+		// Fallback: during draft phase, filter out spectators (team >= 2).
+		for _, p := range g.Players {
+			if p.Team != 0 && p.Team != 1 {
+				continue
+			}
+			isRadiant := p.Team == 0
+			slot := 0
+			if !isRadiant {
+				slot = 128
+			}
+			m.Players = append(m.Players, models.MatchPlayer{
+				AccountID:  p.AccountID,
+				PlayerSlot: slot,
+				HeroID:     p.HeroID,
+				Name:       p.Name,
+				IsRadiant:  isRadiant,
 			})
 		}
 	}
