@@ -315,8 +315,8 @@ func (s *Server) sendError(ctx context.Context, matchID int64, radiant, dire str
 }
 
 func tier1TeamNames() []string {
-	names := make([]string, 0, len(tier1.Tier1Teams))
-	for _, name := range tier1.Tier1Teams {
+	names := make([]string, 0, len(tier1.Teams))
+	for _, name := range tier1.Teams {
 		names = append(names, name)
 	}
 	return names
