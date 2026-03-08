@@ -135,6 +135,7 @@ func (s *Server) tick(ctx context.Context) {
 
 		log.Info("тир-1 матч с завершённым драфтом — запуск анализа",
 			"processed_total", len(s.processed),
+			"game_number", g.GameNumber,
 		)
 
 		go s.processMatch(ctx, g)
@@ -159,6 +160,7 @@ func (s *Server) processMatch(ctx context.Context, game *steam.LiveLeagueGame) {
 	matchID := game.MatchID
 	radiantName := game.RadiantTeamName
 	direName := game.DireTeamName
+	gameNumber := game.GameNumber
 
 	log := slog.With(
 		"match_id", matchID,
@@ -222,7 +224,7 @@ func (s *Server) processMatch(ctx context.Context, game *steam.LiveLeagueGame) {
 		start := time.Now()
 		log.Info("запрос коэффициентов у букмекеров")
 
-		odds, err := s.oddsClient.FindMatchOdds(ctx, radiantName, direName)
+		odds, err := s.oddsClient.FindMatchOdds(ctx, radiantName, direName, gameNumber)
 		if err != nil {
 			log.Warn("не удалось получить коэффициенты",
 				"error", err,

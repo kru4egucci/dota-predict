@@ -99,6 +99,7 @@ type LiveLeagueGame struct {
 	DireTeamID      int
 	RadiantTeamName string
 	DireTeamName    string
+	GameNumber      int // 1-based game number in series (radiant_series_wins + dire_series_wins + 1)
 	Players         []LiveLeaguePlayer
 }
 
@@ -132,6 +133,7 @@ func (c *Client) GetLiveLeagueGames(ctx context.Context) ([]LiveLeagueGame, erro
 			DireTeamID:      g.DireTeam.TeamID,
 			RadiantTeamName: g.RadiantTeam.TeamName,
 			DireTeamName:    g.DireTeam.TeamName,
+			GameNumber:      g.RadiantScore + g.DireScore + 1,
 		}
 
 		// Prefer scoreboard players — the top-level Players array includes
