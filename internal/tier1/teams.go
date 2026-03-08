@@ -3,11 +3,11 @@ package tier1
 // Teams is a hardcoded map of tier-1 Dota 2 team IDs to their names.
 // Keep this list up to date — add/remove teams as the competitive scene evolves.
 var Teams = map[int]string{
-	8597976: "Team Spirit",
+	7119388: "Team Spirit",
 	8599101: "Gaimin Gladiators",
 	8291895: "Tundra Esports",
 	8605863: "BetBoom Team",
-	8944440: "Team Falcons",
+	9247354: "Team Falcons",
 	2163:    "Team Liquid",
 	1838315: "Team Secret",
 	36:      "Natus Vincere",
