@@ -11,7 +11,22 @@ cp .env.example .env
 
 ## Использование
 
-### 1. Анализ конкретного матча
+### Docker (рекомендуется)
+
+```bash
+cp .env.example .env
+# отредактировать .env — вставить ключи
+
+# запуск сервера мониторинга
+docker compose up -d --build
+
+# анализ конкретного матча
+docker compose run --rm dota-predict <match_id>
+```
+
+### Локально
+
+#### 1. Анализ конкретного матча
 
 ```bash
 go run cmd/main.go <match_id>
@@ -19,7 +34,7 @@ go run cmd/main.go <match_id>
 
 Где `match_id` — ID матча (можно посмотреть на дотабаффе). Работает для завершённых и текущих матчей.
 
-### 2. Сервер мониторинга
+#### 2. Сервер мониторинга
 
 ```bash
 go run cmd/main.go server
