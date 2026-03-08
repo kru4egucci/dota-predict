@@ -45,32 +45,32 @@ func (c *Client) SendMessage(ctx context.Context, text string) error {
 	// Telegram has a 4096 character limit per message.
 	// If the text is longer, split into multiple messages.
 	const maxLen = 4000
-	if len(text) <= maxLen {
+	if len([]rune(text)) <= maxLen {
 		return c.sendOne(ctx, text)
 	}
 
 	slog.Debug("telegram: сообщение слишком длинное, разбиваю на части",
-		"total_length", len(text),
+		"total_runes", len([]rune(text)),
 	)
 
+	runes := []rune(text)
 	part := 0
-	// Split by newlines, trying not to break mid-line.
-	for len(text) > 0 {
-		chunk := text
-		if len(chunk) > maxLen {
+	// Split by runes (not bytes) to avoid breaking multi-byte characters.
+	for len(runes) > 0 {
+		end := len(runes)
+		if end > maxLen {
 			// Find last newline before maxLen.
 			cut := maxLen
 			for i := maxLen; i > maxLen/2; i-- {
-				if text[i] == '\n' {
+				if runes[i] == '\n' {
 					cut = i
 					break
 				}
 			}
-			chunk = text[:cut]
-			text = text[cut:]
-		} else {
-			text = ""
+			end = cut
 		}
+		chunk := string(runes[:end])
+		runes = runes[end:]
 		part++
 		if err := c.sendOne(ctx, chunk); err != nil {
 			slog.Error("telegram: ошибка отправки части сообщения",

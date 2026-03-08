@@ -8,6 +8,7 @@ import (
 	"os/signal"
 	"strconv"
 	"syscall"
+	"time"
 
 	"dota-predict/internal/analyzer"
 	"dota-predict/internal/api/oddspapi"
@@ -41,6 +42,7 @@ func main() {
 		"model", cfg.OpenRouterModel,
 		"steam_configured", cfg.SteamAPIKey != "",
 		"oddspapi_configured", cfg.OddsPapiAPIKey != "",
+		"proxy_configured", cfg.ProxyURL != "",
 		"mode", os.Args[1],
 	)
 
@@ -66,8 +68,8 @@ func runAnalysis(cfg *config.Config, matchIDStr string) {
 
 	log := slog.With("match_id", matchID)
 
-	odClient := opendota.NewClient(cfg.OpenDotaAPIKey)
-	steamClient := steam.NewClient(cfg.SteamAPIKey)
+	odClient := opendota.NewClient(cfg.OpenDotaAPIKey, cfg.ProxiedHTTPClient(60*time.Second))
+	steamClient := steam.NewClient(cfg.SteamAPIKey, cfg.ProxiedHTTPClient(30*time.Second))
 	orClient := openrouter.NewClient(cfg.OpenRouterAPIKey, cfg.OpenRouterModel)
 
 	ctx := context.Background()
@@ -98,14 +100,14 @@ func runServer(cfg *config.Config) {
 		os.Exit(1)
 	}
 
-	odClient := opendota.NewClient(cfg.OpenDotaAPIKey)
-	steamClient := steam.NewClient(cfg.SteamAPIKey)
+	odClient := opendota.NewClient(cfg.OpenDotaAPIKey, cfg.ProxiedHTTPClient(60*time.Second))
+	steamClient := steam.NewClient(cfg.SteamAPIKey, cfg.ProxiedHTTPClient(30*time.Second))
 	orClient := openrouter.NewClient(cfg.OpenRouterAPIKey, cfg.OpenRouterModel)
 	tgClient := telegram.NewClient(cfg.TelegramBotToken, cfg.TelegramChatID)
 
 	var oddsClient *oddspapi.Client
 	if cfg.OddsPapiAPIKey != "" {
-		oddsClient = oddspapi.NewClient(cfg.OddsPapiAPIKey)
+		oddsClient = oddspapi.NewClient(cfg.OddsPapiAPIKey, cfg.ProxiedHTTPClient(30*time.Second))
 	}
 
 	srv := server.New(odClient, steamClient, orClient, oddsClient, tgClient)

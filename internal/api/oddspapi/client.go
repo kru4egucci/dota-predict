@@ -29,9 +29,13 @@ type Client struct {
 }
 
 // NewClient creates a new OddsPapi client.
-func NewClient(apiKey string) *Client {
+// If httpClient is provided, it is used for all requests (e.g. for proxy support).
+func NewClient(apiKey string, httpClient *http.Client) *Client {
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 30 * time.Second}
+	}
 	return &Client{
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		httpClient: httpClient,
 		apiKey:     apiKey,
 	}
 }

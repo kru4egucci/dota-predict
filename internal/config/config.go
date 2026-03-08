@@ -2,7 +2,10 @@ package config
 
 import (
 	"fmt"
+	"net/http"
+	"net/url"
 	"os"
+	"time"
 
 	"github.com/joho/godotenv"
 )
@@ -16,6 +19,7 @@ type Config struct {
 	OddsPapiAPIKey   string
 	TelegramBotToken string
 	TelegramChatID   string
+	ProxyURL         string
 }
 
 // Load reads configuration from .env file (if present) and environment variables.
@@ -41,7 +45,24 @@ func Load() (*Config, error) {
 		OddsPapiAPIKey:   os.Getenv("ODDSPAPI_API_KEY"),
 		TelegramBotToken: os.Getenv("TELEGRAM_BOT_TOKEN"),
 		TelegramChatID:   os.Getenv("TELEGRAM_CHAT_ID"),
+		ProxyURL:         os.Getenv("PROXY_URL"),
 	}, nil
+}
+
+// ProxiedHTTPClient returns an *http.Client that routes through ProxyURL if set.
+// Falls back to a default client with the given timeout if no proxy is configured.
+func (c *Config) ProxiedHTTPClient(timeout time.Duration) *http.Client {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	if c.ProxyURL != "" {
+		proxyURL, err := url.Parse(c.ProxyURL)
+		if err == nil {
+			transport.Proxy = http.ProxyURL(proxyURL)
+		}
+	}
+	return &http.Client{
+		Timeout:   timeout,
+		Transport: transport,
+	}
 }
 
 // ValidateServer checks that server-mode-specific config is present.

@@ -21,7 +21,8 @@
       "WebFetch(domain:www.pandascore.co)",
       "WebFetch(domain:oddspapi.io)",
       "WebFetch(domain:developers.pandascore.co)",
-      "WebFetch(domain:betsapi.com)"
+      "WebFetch(domain:betsapi.com)",
+      "Bash(go test:*)"
     ]
   }
 }

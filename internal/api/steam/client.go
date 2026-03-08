@@ -21,12 +21,16 @@ type Client struct {
 }
 
 // NewClient creates a new Steam API client. Returns nil if apiKey is empty.
-func NewClient(apiKey string) *Client {
+// If httpClient is provided, it is used for all requests (e.g. for proxy support).
+func NewClient(apiKey string, httpClient *http.Client) *Client {
 	if apiKey == "" {
 		return nil
 	}
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 30 * time.Second}
+	}
 	return &Client{
-		httpClient: &http.Client{Timeout: 30 * time.Second},
+		httpClient: httpClient,
 		apiKey:     apiKey,
 	}
 }

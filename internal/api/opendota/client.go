@@ -17,20 +17,27 @@ const (
 	rateLimit = 60
 )
 
-// Client is a rate-limited OpenDota API client.
+// Client is a rate-limited OpenDota API client with in-memory caching.
 type Client struct {
 	httpClient *http.Client
 	limiter    *rateLimiter
 	apiKey     string
+	cache      *cache
 }
 
 // NewClient creates a new OpenDota API client with built-in rate limiting.
 // If apiKey is provided, it is appended to all requests (paid plan, higher limits).
-func NewClient(apiKey string) *Client {
+// If httpClient is provided, it is used for all requests (e.g. for proxy support);
+// otherwise a default client with 60s timeout is created.
+func NewClient(apiKey string, httpClient *http.Client) *Client {
+	if httpClient == nil {
+		httpClient = &http.Client{Timeout: 60 * time.Second}
+	}
 	return &Client{
-		httpClient: &http.Client{Timeout: 60 * time.Second},
+		httpClient: httpClient,
 		limiter:    newRateLimiter(rateLimit, time.Minute),
 		apiKey:     apiKey,
+		cache:      newCache(),
 	}
 }
 
