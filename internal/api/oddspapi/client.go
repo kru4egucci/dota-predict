@@ -377,14 +377,20 @@ func (c *Client) get(ctx context.Context, url string, result interface{}) error 
 			return fmt.Errorf("OddsPapi API returned %d: %s", resp.StatusCode, string(body))
 		}
 
+		body, err := io.ReadAll(resp.Body)
+		resp.Body.Close()
+
 		slog.Debug("oddspapi: запрос выполнен",
 			"status", resp.StatusCode,
 			"duration", elapsed.String(),
+			"response_body", string(body),
 		)
 
-		err = json.NewDecoder(resp.Body).Decode(result)
-		resp.Body.Close()
-		return err
+		if err != nil {
+			return fmt.Errorf("read response body: %w", err)
+		}
+
+		return json.Unmarshal(body, result)
 	}
 	return fmt.Errorf("OddsPapi API: unexpected retry loop exit")
 }

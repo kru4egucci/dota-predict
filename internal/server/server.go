@@ -229,10 +229,36 @@ func (s *Server) processMatch(ctx context.Context, game *steam.LiveLeagueGame) {
 		start := time.Now()
 		log.Info("запрос коэффициентов у букмекеров")
 
-		odds, err := s.oddsClient.FindMatchOdds(ctx, radiantName, direName, gameNumber)
-		if err != nil {
-			log.Warn("не удалось получить коэффициенты",
+		const oddsMaxRetries = 3
+		const oddsRetryDelay = 10 * time.Second
+		var odds *models.MatchOdds
+		var err error
+
+		for attempt := 1; attempt <= oddsMaxRetries; attempt++ {
+			odds, err = s.oddsClient.FindMatchOdds(ctx, radiantName, direName, gameNumber)
+			if err == nil {
+				break
+			}
+			log.Warn("не удалось получить коэффициенты, повтор",
 				"error", err,
+				"attempt", attempt,
+				"max_attempts", oddsMaxRetries,
+				"duration", time.Since(start).String(),
+			)
+			if attempt < oddsMaxRetries {
+				select {
+				case <-ctx.Done():
+					oddsCh <- oddsResult{err: ctx.Err()}
+					return
+				case <-time.After(oddsRetryDelay):
+				}
+			}
+		}
+
+		if err != nil {
+			log.Warn("не удалось получить коэффициенты после всех попыток",
+				"error", err,
+				"attempts", oddsMaxRetries,
 				"duration", time.Since(start).String(),
 			)
 			oddsCh <- oddsResult{err: err}
