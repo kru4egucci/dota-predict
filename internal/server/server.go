@@ -64,6 +64,11 @@ func (s *Server) Run(ctx context.Context) error {
 		"tracked_teams", teamNames,
 	)
 
+	// Start periodic odds refresh (every hour).
+	if s.oddsClient != nil {
+		s.oddsClient.StartPeriodicRefresh(ctx)
+	}
+
 	// Run immediately on start, then every pollInterval.
 	s.tick(ctx)
 
@@ -287,12 +292,14 @@ func (s *Server) buildMessage(pred *models.Prediction, odds *models.MatchOdds, m
 		radiantBookOdds := matchOddsForTeam(odds, pred.RadiantTeamName)
 		direBookOdds := matchOddsForTeam(odds, pred.DireTeamName)
 
-		if radiantBookOdds > 0 && betting.RadiantComfortOdds > 0 && radiantBookOdds >= betting.RadiantComfortOdds {
+		const maxOdds = 3.9
+
+		if radiantBookOdds > 0 && radiantBookOdds <= maxOdds && betting.RadiantComfortOdds > 0 && radiantBookOdds >= betting.RadiantComfortOdds {
 			hasBet = true
 			betTeam = pred.RadiantTeamName
 			betOdds = radiantBookOdds
 			comfortOdds = betting.RadiantComfortOdds
-		} else if direBookOdds > 0 && betting.DireComfortOdds > 0 && direBookOdds >= betting.DireComfortOdds {
+		} else if direBookOdds > 0 && direBookOdds <= maxOdds && betting.DireComfortOdds > 0 && direBookOdds >= betting.DireComfortOdds {
 			hasBet = true
 			betTeam = pred.DireTeamName
 			betOdds = direBookOdds

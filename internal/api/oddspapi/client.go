@@ -48,6 +48,9 @@ type Client struct {
 
 	mu    sync.Mutex
 	cache map[string]*cachedFixture // key: "team1 vs team2" normalized
+
+	oddsMu    sync.RWMutex
+	oddsCache map[string]*models.MatchOdds // key: "fixtureId:mapNumber"
 }
 
 type cachedFixture struct {
@@ -56,6 +59,7 @@ type cachedFixture struct {
 }
 
 const fixtureCacheTTL = 10 * time.Minute
+const oddsRefreshInterval = 1 * time.Hour
 
 // NewClient creates a new OddsPapi client.
 func NewClient(apiKey string, httpClient *http.Client) *Client {
@@ -66,6 +70,7 @@ func NewClient(apiKey string, httpClient *http.Client) *Client {
 		httpClient: httpClient,
 		apiKey:     apiKey,
 		cache:      make(map[string]*cachedFixture),
+		oddsCache:  make(map[string]*models.MatchOdds),
 	}
 }
 
@@ -81,7 +86,25 @@ func (c *Client) FindMatchOdds(ctx context.Context, team1, team2 string, gameNum
 		return nil, err
 	}
 
-	// Try /odds first (live odds), then /historical-odds as fallback.
+	// Check odds cache first.
+	cacheKey := oddsCacheKey(fixture.FixtureID, gameNumber)
+	c.oddsMu.RLock()
+	cached, ok := c.oddsCache[cacheKey]
+	c.oddsMu.RUnlock()
+
+	if ok && cached != nil {
+		log.Info("oddspapi: коэффициенты из кеша",
+			"fixture_id", fixture.FixtureID,
+			"bookmaker", cached.Bookmaker,
+			"map", cached.MapNumber,
+			"team1_name", cached.Team1Name, "team1_odds", cached.Team1Odds,
+			"team2_name", cached.Team2Name, "team2_odds", cached.Team2Odds,
+		)
+		return cached, nil
+	}
+
+	// Cache miss — fetch live odds.
+	log.Info("oddspapi: кеш пуст, запрос лайв коэффициентов", "fixture_id", fixture.FixtureID)
 	odds, err := c.tryLiveOdds(ctx, fixture, gameNumber)
 	if err != nil {
 		slog.Debug("oddspapi: live odds недоступны, пробуем historical", "fixture_id", fixture.FixtureID, "error", err)
@@ -91,6 +114,11 @@ func (c *Client) FindMatchOdds(ctx context.Context, team1, team2 string, gameNum
 		log.Warn("oddspapi: не удалось получить коэффициенты", "fixture_id", fixture.FixtureID, "error", err)
 		return nil, err
 	}
+
+	// Save to cache.
+	c.oddsMu.Lock()
+	c.oddsCache[cacheKey] = odds
+	c.oddsMu.Unlock()
 
 	log.Info("oddspapi: коэффициенты получены",
 		"fixture_id", fixture.FixtureID,
@@ -105,18 +133,11 @@ func (c *Client) FindMatchOdds(ctx context.Context, team1, team2 string, gameNum
 
 // tryLiveOdds fetches current odds from /v4/odds.
 func (c *Client) tryLiveOdds(ctx context.Context, fixture *models.OddsFixture, gameNumber int) (*models.MatchOdds, error) {
-	url := fmt.Sprintf("%s/odds?fixtureId=%s&apiKey=%s", baseURL, fixture.FixtureID, c.apiKey)
-
-	var resp models.OddsResponse
-	if err := c.get(ctx, url, &resp); err != nil {
-		return nil, fmt.Errorf("fetch odds: %w", err)
+	resp, err := c.fetchOddsResponse(ctx, fixture.FixtureID)
+	if err != nil {
+		return nil, err
 	}
-
-	if len(resp.BookmakerOdds) == 0 {
-		return nil, fmt.Errorf("no bookmakerOdds in response for fixture %s", fixture.FixtureID)
-	}
-
-	return c.extractOdds(&resp, fixture, gameNumber)
+	return c.extractOdds(resp, fixture, gameNumber)
 }
 
 // tryHistoricalOdds fetches latest odds from /v4/historical-odds (uses newest entry as current price).
@@ -289,13 +310,6 @@ func (c *Client) extractOdds(resp *models.OddsResponse, fixture *models.OddsFixt
 		}, nil
 	}
 
-	// If per-map odds not found and we were looking for a map, fall back to series.
-	if gameNumber > 0 {
-		slog.Debug("oddspapi: коэффициенты по карте не найдены, используем серию",
-			"game_number", gameNumber, "fixture_id", fixture.FixtureID)
-		return c.extractOdds(resp, fixture, 0)
-	}
-
 	return nil, fmt.Errorf("no match winner odds found for fixture %s (market %s)", fixture.FixtureID, targetMarket)
 }
 
@@ -396,6 +410,115 @@ func fuzzyMatch(a, b string) bool {
 	a = stripCommon(a)
 	b = stripCommon(b)
 	return a == b || strings.Contains(a, b) || strings.Contains(b, a)
+}
+
+// oddsCacheKey builds the key for the odds cache.
+func oddsCacheKey(fixtureID string, gameNumber int) string {
+	return fmt.Sprintf("%s:%d", fixtureID, gameNumber)
+}
+
+// StartPeriodicRefresh starts a background goroutine that refreshes odds for all
+// Dota 2 fixtures every hour. Cached odds are only overwritten when new data is found.
+func (c *Client) StartPeriodicRefresh(ctx context.Context) {
+	slog.Info("oddspapi: запуск фонового обновления коэффициентов", "interval", oddsRefreshInterval.String())
+
+	// Run immediately on start.
+	c.refreshAllOdds(ctx)
+
+	go func() {
+		ticker := time.NewTicker(oddsRefreshInterval)
+		defer ticker.Stop()
+
+		for {
+			select {
+			case <-ctx.Done():
+				slog.Info("oddspapi: фоновое обновление остановлено")
+				return
+			case <-ticker.C:
+				c.refreshAllOdds(ctx)
+			}
+		}
+	}()
+}
+
+// refreshAllOdds fetches all fixtures and caches odds for maps 1-3.
+func (c *Client) refreshAllOdds(ctx context.Context) {
+	slog.Info("oddspapi: обновление коэффициентов для всех фикстур")
+
+	now := time.Now().UTC()
+	from := now.Add(-24 * time.Hour).Format("2006-01-02T15:04:05Z")
+	to := now.Add(48 * time.Hour).Format("2006-01-02T15:04:05Z")
+	url := fmt.Sprintf("%s/fixtures?sportId=%d&from=%s&to=%s&apiKey=%s",
+		baseURL, dotaSportID, from, to, c.apiKey)
+
+	var fixtures []models.OddsFixture
+	if err := c.get(ctx, url, &fixtures); err != nil {
+		slog.Error("oddspapi: ошибка получения фикстур для обновления", "error", err)
+		return
+	}
+
+	updated := 0
+	for i := range fixtures {
+		f := &fixtures[i]
+		if !f.HasOdds {
+			continue
+		}
+
+		// Try to fetch odds for this fixture.
+		resp, err := c.fetchOddsResponse(ctx, f.FixtureID)
+		if err != nil {
+			slog.Debug("oddspapi: не удалось получить коэффициенты фикстуры",
+				"fixture_id", f.FixtureID,
+				"teams", f.Participant1Name+" vs "+f.Participant2Name,
+				"error", err,
+			)
+			continue
+		}
+
+		// Try to extract odds for maps 1-3.
+		for mapNum := 1; mapNum <= 3; mapNum++ {
+			odds, err := c.extractOdds(resp, f, mapNum)
+			if err != nil {
+				continue
+			}
+
+			key := oddsCacheKey(f.FixtureID, mapNum)
+			c.oddsMu.Lock()
+			c.oddsCache[key] = odds
+			c.oddsMu.Unlock()
+			updated++
+		}
+
+		// Also cache fixture for team name lookups.
+		cacheKey := normalizeCacheKey(f.Participant1Name, f.Participant2Name)
+		c.mu.Lock()
+		c.cache[cacheKey] = &cachedFixture{
+			fixture:   f,
+			fetchedAt: time.Now(),
+		}
+		c.mu.Unlock()
+	}
+
+	slog.Info("oddspapi: обновление завершено",
+		"fixtures_total", len(fixtures),
+		"odds_cached", updated,
+	)
+}
+
+// fetchOddsResponse fetches the raw odds response for a fixture.
+func (c *Client) fetchOddsResponse(ctx context.Context, fixtureID string) (*models.OddsResponse, error) {
+	url := fmt.Sprintf("%s/odds?fixtureId=%s&apiKey=%s", baseURL, fixtureID, c.apiKey)
+
+	var resp models.OddsResponse
+	if err := c.get(ctx, url, &resp); err != nil {
+		return nil, fmt.Errorf("fetch odds: %w", err)
+	}
+
+	if len(resp.BookmakerOdds) == 0 {
+		return nil, fmt.Errorf("no bookmakerOdds in response for fixture %s", fixtureID)
+	}
+
+	return &resp, nil
 }
 
 func stripCommon(s string) string {
