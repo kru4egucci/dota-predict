@@ -25,8 +25,6 @@ const (
 	// Outcome IDs: first outcome = participant1, second = participant2.
 	outcomeHome = "161"
 	outcomeAway = "162"
-	// Preferred bookmaker (Pinnacle has per-map odds).
-	preferredBookmaker = "pinnacle"
 )
 
 // mapMarkets maps game number (1-based) to OddsPapi market ID.
@@ -77,15 +75,20 @@ func NewClient(apiKey string, httpClient *http.Client) *Client {
 func (c *Client) FindMatchOdds(ctx context.Context, team1, team2 string, gameNumber int) (*models.MatchOdds, error) {
 	log := slog.With("team1", team1, "team2", team2, "game_number", gameNumber)
 
-	fixture, oddsResp, err := c.getFixtureAndOdds(ctx, team1, team2)
+	fixture, err := c.getCachedFixture(ctx, team1, team2)
 	if err != nil {
-		log.Warn("oddspapi: не удалось получить данные", "error", err)
+		log.Warn("oddspapi: не удалось найти фикстуру", "error", err)
 		return nil, err
 	}
 
-	odds, err := c.extractOdds(oddsResp, fixture, gameNumber)
+	// Try /odds first (live odds), then /historical-odds as fallback.
+	odds, err := c.tryLiveOdds(ctx, fixture, gameNumber)
 	if err != nil {
-		log.Warn("oddspapi: не удалось извлечь коэффициенты", "fixture_id", fixture.FixtureID, "error", err)
+		slog.Debug("oddspapi: live odds недоступны, пробуем historical", "fixture_id", fixture.FixtureID, "error", err)
+		odds, err = c.tryHistoricalOdds(ctx, fixture, gameNumber)
+	}
+	if err != nil {
+		log.Warn("oddspapi: не удалось получить коэффициенты", "fixture_id", fixture.FixtureID, "error", err)
 		return nil, err
 	}
 
@@ -100,20 +103,84 @@ func (c *Client) FindMatchOdds(ctx context.Context, team1, team2 string, gameNum
 	return odds, nil
 }
 
-// getFixtureAndOdds returns fixture (cached) and always-fresh odds.
-func (c *Client) getFixtureAndOdds(ctx context.Context, team1, team2 string) (*models.OddsFixture, *models.OddsResponse, error) {
-	fixture, err := c.getCachedFixture(ctx, team1, team2)
-	if err != nil {
-		return nil, nil, err
+// tryLiveOdds fetches current odds from /v4/odds.
+func (c *Client) tryLiveOdds(ctx context.Context, fixture *models.OddsFixture, gameNumber int) (*models.MatchOdds, error) {
+	url := fmt.Sprintf("%s/odds?fixtureId=%s&apiKey=%s", baseURL, fixture.FixtureID, c.apiKey)
+
+	var resp models.OddsResponse
+	if err := c.get(ctx, url, &resp); err != nil {
+		return nil, fmt.Errorf("fetch odds: %w", err)
 	}
 
-	// Always fetch fresh odds for live data.
-	oddsResp, err := c.fetchOdds(ctx, fixture.FixtureID)
-	if err != nil {
-		return nil, nil, err
+	if len(resp.BookmakerOdds) == 0 {
+		return nil, fmt.Errorf("no bookmakerOdds in response for fixture %s", fixture.FixtureID)
 	}
 
-	return fixture, oddsResp, nil
+	return c.extractOdds(&resp, fixture, gameNumber)
+}
+
+// tryHistoricalOdds fetches latest odds from /v4/historical-odds (uses newest entry as current price).
+func (c *Client) tryHistoricalOdds(ctx context.Context, fixture *models.OddsFixture, gameNumber int) (*models.MatchOdds, error) {
+	url := fmt.Sprintf("%s/historical-odds?fixtureId=%s&apiKey=%s", baseURL, fixture.FixtureID, c.apiKey)
+
+	var resp models.HistoricalOddsResponse
+	if err := c.get(ctx, url, &resp); err != nil {
+		return nil, fmt.Errorf("fetch historical odds: %w", err)
+	}
+
+	if len(resp.Bookmakers) == 0 {
+		return nil, fmt.Errorf("no bookmaker data in historical odds for fixture %s", fixture.FixtureID)
+	}
+
+	// Convert historical response to the standard OddsResponse format (take latest price).
+	converted := c.convertHistoricalToOdds(&resp)
+	return c.extractOdds(converted, fixture, gameNumber)
+}
+
+// convertHistoricalToOdds takes historical odds and builds a standard OddsResponse
+// using the latest (first) entry for each outcome.
+func (c *Client) convertHistoricalToOdds(hist *models.HistoricalOddsResponse) *models.OddsResponse {
+	resp := &models.OddsResponse{
+		FixtureID:     hist.FixtureID,
+		BookmakerOdds: make(map[string]models.BookmakerEntry),
+	}
+
+	for bmSlug, bmData := range hist.Bookmakers {
+		entry := models.BookmakerEntry{
+			BookmakerIsActive: true,
+			Markets:           make(map[string]models.OddsMarket),
+		}
+
+		for marketID, market := range bmData.Markets {
+			oddsMarket := models.OddsMarket{
+				Outcomes: make(map[string]models.OddsOutcomeWrap),
+			}
+
+			for outcomeID, outcome := range market.Outcomes {
+				wrap := models.OddsOutcomeWrap{
+					Players: make(map[string]models.OddsPlayer),
+				}
+
+				for playerID, entries := range outcome.Players {
+					if len(entries) > 0 {
+						// First entry is the latest (newest).
+						wrap.Players[playerID] = models.OddsPlayer{
+							Active: entries[0].Active,
+							Price:  entries[0].Price,
+						}
+					}
+				}
+
+				oddsMarket.Outcomes[outcomeID] = wrap
+			}
+
+			entry.Markets[marketID] = oddsMarket
+		}
+
+		resp.BookmakerOdds[bmSlug] = entry
+	}
+
+	return resp
 }
 
 // getCachedFixture returns a cached fixture or fetches a fresh one.
@@ -149,7 +216,7 @@ func (c *Client) findFixture(ctx context.Context, team1, team2 string) (*models.
 	now := time.Now().UTC()
 	from := now.Add(-24 * time.Hour).Format("2006-01-02T15:04:05Z")
 	to := now.Add(48 * time.Hour).Format("2006-01-02T15:04:05Z")
-	url := fmt.Sprintf("%s/fixtures?sportId=%d&hasOdds=true&from=%s&to=%s&apiKey=%s",
+	url := fmt.Sprintf("%s/fixtures?sportId=%d&from=%s&to=%s&apiKey=%s",
 		baseURL, dotaSportID, from, to, c.apiKey)
 
 	var fixtures []models.OddsFixture
@@ -175,18 +242,6 @@ func (c *Client) findFixture(ctx context.Context, team1, team2 string) (*models.
 	return nil, fmt.Errorf("fixture not found for %s vs %s", team1, team2)
 }
 
-// fetchOdds fetches the raw odds response for a fixture.
-func (c *Client) fetchOdds(ctx context.Context, fixtureID string) (*models.OddsResponse, error) {
-	url := fmt.Sprintf("%s/odds?fixtureId=%s&apiKey=%s", baseURL, fixtureID, c.apiKey)
-
-	var resp models.OddsResponse
-	if err := c.get(ctx, url, &resp); err != nil {
-		return nil, fmt.Errorf("fetch odds for fixture %s: %w", fixtureID, err)
-	}
-
-	return &resp, nil
-}
-
 // extractOdds pulls match winner odds for a specific map (or series).
 func (c *Client) extractOdds(resp *models.OddsResponse, fixture *models.OddsFixture, gameNumber int) (*models.MatchOdds, error) {
 	// Determine which market to look for.
@@ -203,17 +258,9 @@ func (c *Client) extractOdds(resp *models.OddsResponse, fixture *models.OddsFixt
 		}
 	}
 
-	// Try preferred bookmaker first (Pinnacle has per-map odds), then others.
-	bookmakers := []string{preferredBookmaker}
-	for bm := range resp.BookmakerOdds {
-		if bm != preferredBookmaker {
-			bookmakers = append(bookmakers, bm)
-		}
-	}
-
-	for _, bm := range bookmakers {
-		entry, ok := resp.BookmakerOdds[bm]
-		if !ok || !entry.BookmakerIsActive {
+	// Try all available bookmakers.
+	for bm, entry := range resp.BookmakerOdds {
+		if !entry.BookmakerIsActive {
 			continue
 		}
 

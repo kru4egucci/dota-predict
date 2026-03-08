@@ -22,14 +22,14 @@ type OddsResponse struct {
 
 // BookmakerEntry represents odds from a single bookmaker.
 type BookmakerEntry struct {
-	BookmakerIsActive bool                      `json:"bookmakerIsActive"`
-	Markets           map[string]OddsMarket     `json:"markets"`
+	BookmakerIsActive bool                  `json:"bookmakerIsActive"`
+	Markets           map[string]OddsMarket `json:"markets"`
 }
 
 // OddsMarket represents a betting market (e.g. match winner moneyline).
 type OddsMarket struct {
-	Outcomes         map[string]OddsOutcomeWrap `json:"outcomes"`
-	BookmakerMarketID string                    `json:"bookmakerMarketId"`
+	Outcomes          map[string]OddsOutcomeWrap `json:"outcomes"`
+	BookmakerMarketID string                     `json:"bookmakerMarketId"`
 }
 
 // OddsOutcomeWrap wraps the players map for an outcome.
@@ -41,6 +41,34 @@ type OddsOutcomeWrap struct {
 type OddsPlayer struct {
 	Active bool    `json:"active"`
 	Price  float64 `json:"price"`
+}
+
+// HistoricalOddsResponse represents the /v4/historical-odds response.
+type HistoricalOddsResponse struct {
+	FixtureID  string                             `json:"fixtureId"`
+	Bookmakers map[string]HistoricalBookmakerEntry `json:"bookmakers"`
+}
+
+// HistoricalBookmakerEntry holds historical odds for one bookmaker.
+type HistoricalBookmakerEntry struct {
+	Markets map[string]HistoricalMarket `json:"markets"`
+}
+
+// HistoricalMarket holds outcomes for a market in historical odds.
+type HistoricalMarket struct {
+	Outcomes map[string]HistoricalOutcomeWrap `json:"outcomes"`
+}
+
+// HistoricalOutcomeWrap wraps the players map for a historical outcome.
+type HistoricalOutcomeWrap struct {
+	Players map[string][]HistoricalOddsEntry `json:"players"`
+}
+
+// HistoricalOddsEntry is a single timestamped odds entry (sorted newest first).
+type HistoricalOddsEntry struct {
+	CreatedAt string  `json:"createdAt"`
+	Price     float64 `json:"price"`
+	Active    bool    `json:"active"`
 }
 
 // MatchOdds holds the final extracted odds for a match.
