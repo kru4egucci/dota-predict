@@ -14,7 +14,7 @@ var Teams = map[int]string{
 	2586976: "OG",
 	1883502: "Virtus.pro",
 	15:      "PSG.LGD",
-	8261648: "Xtreme Gaming",
+	8261500: "Xtreme Gaming",
 	9467224: "Aurora Gaming",
 	9823272: "Team Yandex",
 	9572001: "Parivision",
