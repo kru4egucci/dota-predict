@@ -350,13 +350,8 @@ func (s *Server) buildMessage(pred *models.Prediction, odds *models.MatchOdds, m
 			pred.DireTeamName, betting.DraftDireProb))
 	}
 
-	// Truncated analysis (first ~1500 chars to keep message readable).
 	sb.WriteString("\n<b>Анализ:</b>\n")
-	analysis := pred.Analysis
-	if len(analysis) > 1500 {
-		analysis = analysis[:1500] + "..."
-	}
-	analysis = telegram.MDToTelegramHTML(analysis)
+	analysis := telegram.MDToTelegramHTML(pred.Analysis)
 	sb.WriteString(analysis)
 
 	return sb.String()

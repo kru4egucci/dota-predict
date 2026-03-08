@@ -71,8 +71,11 @@ func (c *Client) FindMatchOdds(ctx context.Context, team1, team2 string) (*model
 
 // findFixture searches OddsPapi fixtures for a match between the two teams.
 func (c *Client) findFixture(ctx context.Context, team1, team2 string) (*models.OddsFixture, error) {
-	url := fmt.Sprintf("%s/fixtures?sportId=%d&hasOdds=true&apiKey=%s",
-		baseURL, dotaSportID, c.apiKey)
+	now := time.Now().UTC()
+	from := now.Add(-24 * time.Hour).Format("2006-01-02T15:04:05Z")
+	to := now.Add(48 * time.Hour).Format("2006-01-02T15:04:05Z")
+	url := fmt.Sprintf("%s/fixtures?sportId=%d&hasOdds=true&from=%s&to=%s&apiKey=%s",
+		baseURL, dotaSportID, from, to, c.apiKey)
 
 	var resp models.OddsFixturesResponse
 	if err := c.get(ctx, url, &resp); err != nil {
@@ -182,40 +185,65 @@ func (c *Client) extractOdds(data *models.OddsData, fixture *models.OddsFixture)
 }
 
 func (c *Client) get(ctx context.Context, url string, result interface{}) error {
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return err
-	}
+	const maxRetries = 3
 
-	start := time.Now()
-	resp, err := c.httpClient.Do(req)
-	elapsed := time.Since(start)
+	for attempt := 0; attempt <= maxRetries; attempt++ {
+		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+		if err != nil {
+			return err
+		}
 
-	if err != nil {
-		slog.Error("oddspapi: ошибка HTTP запроса",
-			"duration", elapsed.String(),
-			"error", err,
-		)
-		return err
-	}
-	defer resp.Body.Close()
+		start := time.Now()
+		resp, err := c.httpClient.Do(req)
+		elapsed := time.Since(start)
 
-	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		slog.Error("oddspapi: неуспешный HTTP статус",
+		if err != nil {
+			slog.Error("oddspapi: ошибка HTTP запроса",
+				"duration", elapsed.String(),
+				"error", err,
+			)
+			return err
+		}
+
+		if resp.StatusCode == http.StatusTooManyRequests {
+			resp.Body.Close()
+			if attempt < maxRetries {
+				wait := 3 * time.Second
+				slog.Warn("oddspapi: rate limited, повтор",
+					"attempt", attempt+1,
+					"wait", wait.String(),
+				)
+				select {
+				case <-ctx.Done():
+					return ctx.Err()
+				case <-time.After(wait):
+				}
+				continue
+			}
+			return fmt.Errorf("OddsPapi API rate limited after %d retries", maxRetries)
+		}
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			resp.Body.Close()
+			slog.Error("oddspapi: неуспешный HTTP статус",
+				"status", resp.StatusCode,
+				"body", string(body),
+				"duration", elapsed.String(),
+			)
+			return fmt.Errorf("OddsPapi API returned %d: %s", resp.StatusCode, string(body))
+		}
+
+		slog.Debug("oddspapi: запрос выполнен",
 			"status", resp.StatusCode,
-			"body", string(body),
 			"duration", elapsed.String(),
 		)
-		return fmt.Errorf("OddsPapi API returned %d: %s", resp.StatusCode, string(body))
+
+		err = json.NewDecoder(resp.Body).Decode(result)
+		resp.Body.Close()
+		return err
 	}
-
-	slog.Debug("oddspapi: запрос выполнен",
-		"status", resp.StatusCode,
-		"duration", elapsed.String(),
-	)
-
-	return json.NewDecoder(resp.Body).Decode(result)
+	return fmt.Errorf("OddsPapi API: unexpected retry loop exit")
 }
 
 // matchTeams checks if the fixture name contains both team names.
