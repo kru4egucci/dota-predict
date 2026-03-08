@@ -12,6 +12,9 @@ type Config struct {
 	OpenRouterAPIKey string
 	OpenRouterModel  string
 	SteamAPIKey      string
+	OddsPapiAPIKey   string
+	TelegramBotToken string
+	TelegramChatID   string
 }
 
 // Load reads configuration from .env file (if present) and environment variables.
@@ -33,5 +36,22 @@ func Load() (*Config, error) {
 		OpenRouterAPIKey: apiKey,
 		OpenRouterModel:  model,
 		SteamAPIKey:      os.Getenv("STEAM_API_KEY"),
+		OddsPapiAPIKey:   os.Getenv("ODDSPAPI_API_KEY"),
+		TelegramBotToken: os.Getenv("TELEGRAM_BOT_TOKEN"),
+		TelegramChatID:   os.Getenv("TELEGRAM_CHAT_ID"),
 	}, nil
+}
+
+// ValidateServer checks that server-mode-specific config is present.
+func (c *Config) ValidateServer() error {
+	if c.SteamAPIKey == "" {
+		return fmt.Errorf("STEAM_API_KEY is required for server mode (Steam API используется для поиска лайв турнирных матчей)")
+	}
+	if c.TelegramBotToken == "" {
+		return fmt.Errorf("TELEGRAM_BOT_TOKEN is required for server mode")
+	}
+	if c.TelegramChatID == "" {
+		return fmt.Errorf("TELEGRAM_CHAT_ID is required for server mode")
+	}
+	return nil
 }

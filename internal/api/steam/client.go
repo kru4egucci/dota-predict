@@ -86,8 +86,91 @@ type steamPlayerScore struct {
 	Level     int `json:"level"`
 }
 
+// LiveLeagueGame holds exported data about a live league game from Steam API.
+type LiveLeagueGame struct {
+	MatchID         int64
+	LeagueID        int
+	RadiantTeamID   int
+	DireTeamID      int
+	RadiantTeamName string
+	DireTeamName    string
+	Players         []LiveLeaguePlayer
+}
+
+// LiveLeaguePlayer holds a player's info in a live league game.
+type LiveLeaguePlayer struct {
+	AccountID int
+	HeroID    int
+	Team      int // 0 = radiant, 1 = dire
+}
+
+// GetLiveLeagueGames returns all currently live league (tournament) games.
+func (c *Client) GetLiveLeagueGames(ctx context.Context) ([]LiveLeagueGame, error) {
+	games, err := c.fetchLiveGames(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	result := make([]LiveLeagueGame, 0, len(games))
+	for _, g := range games {
+		lg := LiveLeagueGame{
+			MatchID:         g.MatchID,
+			LeagueID:        g.LeagueID,
+			RadiantTeamID:   g.RadiantTeam.TeamID,
+			DireTeamID:      g.DireTeam.TeamID,
+			RadiantTeamName: g.RadiantTeam.TeamName,
+			DireTeamName:    g.DireTeam.TeamName,
+		}
+
+		for _, p := range g.Players {
+			lg.Players = append(lg.Players, LiveLeaguePlayer{
+				AccountID: p.AccountID,
+				HeroID:    p.HeroID,
+				Team:      p.Team,
+			})
+		}
+
+		// If players list is empty but scoreboard has data, use scoreboard.
+		if len(lg.Players) == 0 && g.Scoreboard != nil {
+			for _, p := range g.Scoreboard.Radiant.Players {
+				lg.Players = append(lg.Players, LiveLeaguePlayer{
+					AccountID: p.AccountID,
+					HeroID:    p.HeroID,
+					Team:      0,
+				})
+			}
+			for _, p := range g.Scoreboard.Dire.Players {
+				lg.Players = append(lg.Players, LiveLeaguePlayer{
+					AccountID: p.AccountID,
+					HeroID:    p.HeroID,
+					Team:      1,
+				})
+			}
+		}
+
+		result = append(result, lg)
+	}
+
+	return result, nil
+}
+
 // FindLiveMatch searches for a specific match among live league games.
 func (c *Client) FindLiveMatch(ctx context.Context, matchID int64) (*models.Match, error) {
+	games, err := c.fetchLiveGames(ctx)
+	if err != nil {
+		return nil, err
+	}
+
+	for _, game := range games {
+		if game.MatchID == matchID {
+			return convertSteamLiveGame(&game), nil
+		}
+	}
+
+	return nil, fmt.Errorf("матч %d не найден среди лайв лиговых матчей Steam", matchID)
+}
+
+func (c *Client) fetchLiveGames(ctx context.Context) ([]steamLiveGame, error) {
 	url := fmt.Sprintf("%s/IDOTA2Match_570/GetLiveLeagueGames/v1/?key=%s", baseURL, c.apiKey)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
@@ -111,13 +194,7 @@ func (c *Client) FindLiveMatch(ctx context.Context, matchID int64) (*models.Matc
 		return nil, fmt.Errorf("decoding response: %w", err)
 	}
 
-	for _, game := range result.Result.Games {
-		if game.MatchID == matchID {
-			return convertSteamLiveGame(&game), nil
-		}
-	}
-
-	return nil, fmt.Errorf("матч %d не найден среди лайв лиговых матчей Steam", matchID)
+	return result.Result.Games, nil
 }
 
 func convertSteamLiveGame(g *steamLiveGame) *models.Match {

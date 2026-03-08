@@ -16,7 +16,12 @@
       "Bash(go version:*)",
       "WebFetch(domain:api.opendota.com)",
       "WebFetch(domain:openrouter.ai)",
-      "Bash(go build:*)"
+      "Bash(go build:*)",
+      "WebFetch(domain:the-odds-api.com)",
+      "WebFetch(domain:www.pandascore.co)",
+      "WebFetch(domain:oddspapi.io)",
+      "WebFetch(domain:developers.pandascore.co)",
+      "WebFetch(domain:betsapi.com)"
     ]
   }
 }
