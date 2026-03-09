@@ -237,6 +237,23 @@ func (lg *LiveGame) ToMatch() *Match {
 	return m
 }
 
+// HeroPatchStats represents hero win rate statistics for a specific game patch
+// (sourced from the Explorer SQL endpoint).
+type HeroPatchStats struct {
+	HeroID int
+	Games  int
+	Wins   int
+}
+
+// HeroLeagueStats represents hero pick/ban/win statistics for a specific league
+// (sourced from the Explorer SQL endpoint).
+type HeroLeagueStats struct {
+	HeroID int
+	Picks  int
+	Bans   int
+	Wins   int // wins out of Picks
+}
+
 // PlayerHeroStat represents GET /players/{account_id}/heroes response entry.
 type PlayerHeroStat struct {
 	HeroID     int   `json:"hero_id"`
@@ -261,4 +278,6 @@ type PlayerRecentMatch struct {
 	HeroDamage int   `json:"hero_damage"`
 	LastHits   int   `json:"last_hits"`
 	StartTime  int64 `json:"start_time"`
+	LaneRole   int   `json:"lane_role"` // 1=safe lane, 2=mid, 3=off lane, 4=jungle
+	Lane       int   `json:"lane"`      // 1=bot, 2=mid, 3=top
 }

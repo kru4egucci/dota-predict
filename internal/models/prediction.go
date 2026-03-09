@@ -7,6 +7,13 @@ type CollectedData struct {
 	Match     Match
 	HeroNames map[int]string // hero_id -> localized_name
 
+	// Patch meta.
+	Patch          string                  // current patch version (e.g. "7.40")
+	HeroPatchStats map[int]*HeroPatchStats // hero_id -> patch-specific win rates
+
+	// League/tournament meta (empty if not a league match).
+	HeroLeagueStats map[int]*HeroLeagueStats // hero_id -> league pick/ban/win stats
+
 	// Hero analysis.
 	HeroStats    map[int]*HeroStats    // hero_id -> stats
 	HeroMatchups map[int][]HeroMatchup // hero_id -> matchups vs enemies
@@ -47,6 +54,16 @@ type Prediction struct {
 	Analysis        string
 	DraftAnalysis   string
 	Betting         BettingInfo
+	Factors         []FactorAssessment
+}
+
+// FactorAssessment is a single factor evaluation from the LLM analysis.
+type FactorAssessment struct {
+	Name      string // e.g. "Сила и форма команд"
+	Weight    int    // percentage, e.g. 25
+	Advantage string // "Radiant", "Dire", or "Equal"
+	Degree    string // "незначительное", "умеренное", "значительное"
+	Reasoning string
 }
 
 // BettingInfo contains parsed probabilities and calculated betting odds.

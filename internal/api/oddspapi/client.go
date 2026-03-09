@@ -110,6 +110,10 @@ func (c *Client) FindMatchOdds(ctx context.Context, team1, team2 string, gameNum
 		slog.Debug("oddspapi: live odds недоступны, пробуем historical", "fixture_id", fixture.FixtureID, "error", err)
 		odds, err = c.tryHistoricalOdds(ctx, fixture, gameNumber)
 	}
+	if err != nil && gameNumber > 1 {
+		slog.Debug("oddspapi: пробуем фоллбэк на предыдущую карту", "game_number", gameNumber)
+		odds, err = c.tryFallbackOdds(ctx, fixture, gameNumber)
+	}
 	if err != nil {
 		log.Warn("oddspapi: не удалось получить коэффициенты", "fixture_id", fixture.FixtureID, "error", err)
 		return nil, err
@@ -188,6 +192,82 @@ func (c *Client) convertHistoricalToOdds(hist *models.HistoricalOddsResponse) *m
 						wrap.Players[playerID] = models.OddsPlayer{
 							Active: entries[0].Active,
 							Price:  entries[0].Price,
+						}
+					}
+				}
+
+				oddsMarket.Outcomes[outcomeID] = wrap
+			}
+
+			entry.Markets[marketID] = oddsMarket
+		}
+
+		resp.BookmakerOdds[bmSlug] = entry
+	}
+
+	return resp
+}
+
+// tryFallbackOdds attempts to use earliest historical odds from a previous map
+// when the target map's odds are unavailable.
+// For map 2: tries map 1. For map 3: tries map 2, then map 1.
+func (c *Client) tryFallbackOdds(ctx context.Context, fixture *models.OddsFixture, gameNumber int) (*models.MatchOdds, error) {
+	url := fmt.Sprintf("%s/historical-odds?fixtureId=%s&apiKey=%s", baseURL, fixture.FixtureID, c.apiKey)
+
+	var hist models.HistoricalOddsResponse
+	if err := c.get(ctx, url, &hist); err != nil {
+		return nil, fmt.Errorf("fetch historical odds for fallback: %w", err)
+	}
+
+	converted := c.convertHistoricalToEarliestOdds(&hist)
+
+	for fallbackMap := gameNumber - 1; fallbackMap >= 1; fallbackMap-- {
+		odds, err := c.extractOdds(converted, fixture, fallbackMap)
+		if err == nil {
+			odds.MapNumber = gameNumber
+			slog.Info("oddspapi: фоллбэк — используем ранние коэффициенты предыдущей карты",
+				"original_map", gameNumber,
+				"fallback_map", fallbackMap,
+				"team1_odds", odds.Team1Odds,
+				"team2_odds", odds.Team2Odds,
+			)
+			return odds, nil
+		}
+	}
+
+	return nil, fmt.Errorf("no fallback odds found for map %d", gameNumber)
+}
+
+// convertHistoricalToEarliestOdds builds a standard OddsResponse using the
+// earliest (last) entry for each outcome in the historical data.
+func (c *Client) convertHistoricalToEarliestOdds(hist *models.HistoricalOddsResponse) *models.OddsResponse {
+	resp := &models.OddsResponse{
+		FixtureID:     hist.FixtureID,
+		BookmakerOdds: make(map[string]models.BookmakerEntry),
+	}
+
+	for bmSlug, bmData := range hist.Bookmakers {
+		entry := models.BookmakerEntry{
+			BookmakerIsActive: true,
+			Markets:           make(map[string]models.OddsMarket),
+		}
+
+		for marketID, market := range bmData.Markets {
+			oddsMarket := models.OddsMarket{
+				Outcomes: make(map[string]models.OddsOutcomeWrap),
+			}
+
+			for outcomeID, outcome := range market.Outcomes {
+				wrap := models.OddsOutcomeWrap{
+					Players: make(map[string]models.OddsPlayer),
+				}
+
+				for playerID, entries := range outcome.Players {
+					if len(entries) > 0 {
+						earliest := entries[len(entries)-1]
+						wrap.Players[playerID] = models.OddsPlayer{
+							Active: earliest.Active,
+							Price:  earliest.Price,
 						}
 					}
 				}

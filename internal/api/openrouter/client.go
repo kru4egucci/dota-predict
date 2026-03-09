@@ -17,25 +17,38 @@ const apiURL = "https://openrouter.ai/api/v1/chat/completions"
 
 // Client is an OpenRouter LLM API client.
 type Client struct {
-	httpClient *http.Client
-	apiKey     string
-	model      string
+	httpClient  *http.Client
+	apiKey      string
+	model       string
+	temperature float64
 }
 
 // NewClient creates a new OpenRouter client.
 func NewClient(apiKey, model string) *Client {
 	return &Client{
-		httpClient: &http.Client{Timeout: 120 * time.Second},
-		apiKey:     apiKey,
-		model:      model,
+		httpClient:  &http.Client{Timeout: 300 * time.Second},
+		apiKey:      apiKey,
+		model:       model,
+		temperature: 0.3,
 	}
 }
 
 // ChatCompletion sends messages to the LLM and returns the response.
-func (c *Client) ChatCompletion(ctx context.Context, messages []models.ChatMessage) (*models.ChatResponse, error) {
+// If responseFormat is non-nil, the model is instructed to return structured output.
+func (c *Client) ChatCompletion(ctx context.Context, messages []models.ChatMessage, responseFormat *models.ResponseFormat) (*models.ChatResponse, error) {
+	temp := c.temperature
+	maxTokens := 4096
+
 	body := models.ChatRequest{
-		Model:    c.model,
-		Messages: messages,
+		Model:       c.model,
+		Messages:    messages,
+		Temperature: &temp,
+		MaxTokens:   &maxTokens,
+		Reasoning:   &models.Reasoning{Effort: "high"},
+	}
+
+	if responseFormat != nil {
+		body.ResponseFormat = responseFormat
 	}
 
 	jsonBody, err := json.Marshal(body)
@@ -47,6 +60,8 @@ func (c *Client) ChatCompletion(ctx context.Context, messages []models.ChatMessa
 		"model", c.model,
 		"messages_count", len(messages),
 		"request_size", len(jsonBody),
+		"temperature", temp,
+		"has_response_format", responseFormat != nil,
 	)
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(jsonBody))
@@ -105,6 +120,8 @@ func (c *Client) ChatCompletion(ctx context.Context, messages []models.ChatMessa
 		"duration", elapsed.String(),
 		"choices", len(chatResp.Choices),
 		"response_length", responseLen,
+		"prompt_tokens", chatResp.Usage.PromptTokens,
+		"completion_tokens", chatResp.Usage.CompletionTokens,
 	)
 
 	return &chatResp, nil

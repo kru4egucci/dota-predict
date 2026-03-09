@@ -16,7 +16,9 @@ func buildPrompt(data *models.CollectedData) string {
 	writeMatchOverview(&sb, data)
 	writeDraftSection(&sb, data)
 	writeHeroStatsSection(&sb, data)
+	writeLeagueMetaSection(&sb, data)
 	writeMatchupSection(&sb, data)
+	writeLaneMatchupSection(&sb, data)
 	writeTeamStatsSection(&sb, data)
 	writeTeamFormSection(&sb, data)
 	writeH2HSection(&sb, data)
@@ -82,36 +84,106 @@ func writeDraftSection(sb *strings.Builder, data *models.CollectedData) {
 }
 
 func writeHeroStatsSection(sb *strings.Builder, data *models.CollectedData) {
-	sb.WriteString("## 3. ВИНРЕЙТЫ ГЕРОЕВ (Текущая мета)\n")
+	patchLabel := "Текущая мета"
+	if data.Patch != "" {
+		patchLabel = fmt.Sprintf("Патч %s", data.Patch)
+	}
+	sb.WriteString(fmt.Sprintf("## 3. СТАТИСТИКА ГЕРОЕВ (%s)\n", patchLabel))
 
 	for _, p := range data.Match.Players {
 		name := heroName(data.HeroNames, p.HeroID)
-		stats := data.HeroStats[p.HeroID]
-		if stats == nil {
-			sb.WriteString(fmt.Sprintf("  %s: нет данных\n", name))
-			continue
-		}
-
-		totalPick := stats.Bracket6Pick + stats.Bracket7Pick + stats.Bracket8Pick
-		totalWin := stats.Bracket6Win + stats.Bracket7Win + stats.Bracket8Win
-		winRate := safePercent(totalWin, totalPick)
-
-		proWinRate := safePercent(stats.ProWin, stats.ProPick)
-
 		side := "Radiant"
 		if !p.IsRadiant {
 			side = "Dire"
 		}
 
-		sb.WriteString(fmt.Sprintf("  [%s] %s: %.1f%% винрейт в пабе (высокие ранги, %d игр), %.1f%% винрейт в про (%d игр)\n",
-			side, name, winRate, totalPick, proWinRate, stats.ProPick))
+		stats := data.HeroStats[p.HeroID]
+		if stats == nil {
+			sb.WriteString(fmt.Sprintf("  [%s] %s: нет данных\n", side, name))
+			continue
+		}
+
+		totalPick := stats.Bracket6Pick + stats.Bracket7Pick + stats.Bracket8Pick
+		totalWin := stats.Bracket6Win + stats.Bracket7Win + stats.Bracket8Win
+		pubWR := safePercent(totalWin, totalPick)
+		proWR := safePercent(stats.ProWin, stats.ProPick)
+
+		sb.WriteString(fmt.Sprintf("  [%s] %s:\n", side, name))
+		sb.WriteString(fmt.Sprintf("    Паб (высокие ранги): %.1f%% (%d игр)\n", pubWR, totalPick))
+		sb.WriteString(fmt.Sprintf("    Про (все время): %.1f%% (%d игр)\n", proWR, stats.ProPick))
+
+		// Patch-specific win rate.
+		if ps := data.HeroPatchStats[p.HeroID]; ps != nil && ps.Games > 0 {
+			patchWR := safePercent(ps.Wins, ps.Games)
+			sb.WriteString(fmt.Sprintf("    Патч %s: %.1f%% (%d игр)\n", data.Patch, patchWR, ps.Games))
+		}
+
+		// League-specific stats for this hero.
+		if ls := data.HeroLeagueStats[p.HeroID]; ls != nil && ls.Picks > 0 {
+			leagueWR := safePercent(ls.Wins, ls.Picks)
+			sb.WriteString(fmt.Sprintf("    Турнир: %d пиков, %d банов, %.1f%% винрейт\n",
+				ls.Picks, ls.Bans, leagueWR))
+		}
+	}
+
+	sb.WriteString("\n")
+}
+
+func writeLeagueMetaSection(sb *strings.Builder, data *models.CollectedData) {
+	if len(data.HeroLeagueStats) == 0 {
+		return
+	}
+
+	sb.WriteString("## 4. МЕТА ТУРНИРА (Самые контестируемые герои)\n")
+
+	// Sort by contest rate (picks + bans) descending.
+	type entry struct {
+		heroID  int
+		picks   int
+		bans    int
+		wins    int
+		contest int
+	}
+	entries := make([]entry, 0, len(data.HeroLeagueStats))
+	totalMatches := 0
+	for _, ls := range data.HeroLeagueStats {
+		c := ls.Picks + ls.Bans
+		entries = append(entries, entry{
+			heroID: ls.HeroID, picks: ls.Picks, bans: ls.Bans,
+			wins: ls.Wins, contest: c,
+		})
+		// Estimate total matches: max picks for a single hero can't exceed total matches.
+		if ls.Picks > totalMatches {
+			totalMatches = ls.Picks
+		}
+	}
+
+	// Sort descending by contest count.
+	for i := range entries {
+		for j := i + 1; j < len(entries); j++ {
+			if entries[j].contest > entries[i].contest {
+				entries[i], entries[j] = entries[j], entries[i]
+			}
+		}
+	}
+
+	limit := 15
+	if len(entries) < limit {
+		limit = len(entries)
+	}
+
+	for _, e := range entries[:limit] {
+		name := heroName(data.HeroNames, e.heroID)
+		wr := safePercent(e.wins, e.picks)
+		sb.WriteString(fmt.Sprintf("  %s: %d пиков (%.1f%% WR), %d банов — %d contest\n",
+			name, e.picks, wr, e.bans, e.contest))
 	}
 
 	sb.WriteString("\n")
 }
 
 func writeMatchupSection(sb *strings.Builder, data *models.CollectedData) {
-	sb.WriteString("## 4. АНАЛИЗ МАТЧАПОВ (Контрпики)\n")
+	sb.WriteString("## 5. АНАЛИЗ МАТЧАПОВ (Контрпики)\n")
 
 	radiantHeroes, direHeroes := heroIDsByTeam(data)
 
@@ -151,7 +223,7 @@ func writeMatchupSection(sb *strings.Builder, data *models.CollectedData) {
 }
 
 func writeTeamStatsSection(sb *strings.Builder, data *models.CollectedData) {
-	sb.WriteString("## 5. ОБЩАЯ СТАТИСТИКА КОМАНД\n")
+	sb.WriteString("## 7. ОБЩАЯ СТАТИСТИКА КОМАНД\n")
 
 	writeTeamStat(sb, "Radiant", data.RadiantTeam)
 	writeTeamStat(sb, "Dire", data.DireTeam)
@@ -172,7 +244,7 @@ func writeTeamStat(sb *strings.Builder, side string, team *models.Team) {
 }
 
 func writeTeamFormSection(sb *strings.Builder, data *models.CollectedData) {
-	sb.WriteString("## 6. ФОРМА КОМАНД (Последние 10 матчей)\n")
+	sb.WriteString("## 8. ФОРМА КОМАНД (Последние 10 матчей)\n")
 
 	writeTeamForm(sb, "Radiant", data.RadiantTeam, data.RadiantTeamMatches)
 	writeTeamForm(sb, "Dire", data.DireTeam, data.DireTeamMatches)
@@ -208,7 +280,7 @@ func writeTeamForm(sb *strings.Builder, side string, team *models.Team, matches 
 }
 
 func writeH2HSection(sb *strings.Builder, data *models.CollectedData) {
-	sb.WriteString("## 7. ИСТОРИЯ ЛИЧНЫХ ВСТРЕЧ\n")
+	sb.WriteString("## 9. ИСТОРИЯ ЛИЧНЫХ ВСТРЕЧ\n")
 
 	if len(data.HeadToHead) == 0 {
 		sb.WriteString("  История личных встреч не найдена.\n\n")
@@ -254,7 +326,7 @@ func writeH2HSection(sb *strings.Builder, data *models.CollectedData) {
 }
 
 func writeTeamHeroSection(sb *strings.Builder, data *models.CollectedData) {
-	sb.WriteString("## 8. ВИНРЕЙТЫ КОМАНД НА КОНКРЕТНЫХ ГЕРОЯХ\n")
+	sb.WriteString("## 10. ВИНРЕЙТЫ КОМАНД НА КОНКРЕТНЫХ ГЕРОЯХ\n")
 
 	radiantHeroes, direHeroes := heroIDsByTeam(data)
 	writeTeamHeroStats(sb, "Radiant", data.RadiantTeam, data.RadiantTeamHeroes, radiantHeroes, data.HeroNames)
@@ -289,7 +361,7 @@ func writeTeamHeroStats(sb *strings.Builder, side string, team *models.Team, tea
 }
 
 func writePlayerHeroSection(sb *strings.Builder, data *models.CollectedData) {
-	sb.WriteString("## 9. КОМФОРТ ИГРОКОВ НА ГЕРОЯХ\n")
+	sb.WriteString("## 11. КОМФОРТ ИГРОКОВ НА ГЕРОЯХ\n")
 
 	for _, p := range data.Match.Players {
 		if p.AccountID == 0 {
@@ -318,7 +390,7 @@ func writePlayerHeroSection(sb *strings.Builder, data *models.CollectedData) {
 }
 
 func writePlayerFormSection(sb *strings.Builder, data *models.CollectedData) {
-	sb.WriteString("## 10. ФОРМА ИГРОКОВ (Последние 20 матчей)\n")
+	sb.WriteString("## 12. ФОРМА ИГРОКОВ (Последние 20 матчей)\n")
 
 	for _, p := range data.Match.Players {
 		if p.AccountID == 0 {
@@ -375,7 +447,9 @@ func buildDraftPrompt(data *models.CollectedData) string {
 
 	writeDraftSection(&sb, data)
 	writeHeroStatsSection(&sb, data)
+	writeLeagueMetaSection(&sb, data)
 	writeMatchupSection(&sb, data)
+	writeLaneMatchupSection(&sb, data)
 	writeDraftAnalysisInstructions(&sb)
 
 	return sb.String()
@@ -385,73 +459,57 @@ func writeDraftAnalysisInstructions(sb *strings.Builder) {
 	sb.WriteString(`=== ИНСТРУКЦИИ ПО АНАЛИЗУ ===
 На основе данных выше проведи ЧИСТЫЙ анализ драфта. Оцени ТОЛЬКО:
 
-1. **Матчапы героев**: Кто кого контрит? У какой стороны лучше индивидуальные матчапы?
-2. **Синергии внутри команды**: Какие комбо героев есть у каждой стороны? Насколько хорошо герои дополняют друг друга?
-3. **Мета героев**: Насколько сильны выбранные герои в текущей мете (винрейты в пабах и про-сцене)?
-4. **Баланс ролей и лейнинг**: Насколько хорошо распределены роли? У кого сильнее лейнинг-стадия?
-5. **Масштабирование**: Какой драфт сильнее на разных стадиях игры (ранняя/средняя/поздняя)?
+1. Матчапы героев: Кто кого контрит? У какой стороны лучше индивидуальные матчапы?
+2. Синергии внутри команды: Какие комбо героев есть у каждой стороны? Насколько хорошо герои дополняют друг друга?
+3. Мета патча и турнира: Насколько сильны выбранные герои в текущем патче и на данном турнире?
+4. Лейн-матчапы: У кого преимущество на миде? Какая сторона доминирует на сайд-лайнах?
+5. Масштабирование: Какой драфт сильнее на разных стадиях игры (ранняя/средняя/поздняя)?
 
 ВАЖНО: Полностью ИГНОРИРУЙ силу команд, рейтинги, форму игроков, историю встреч и любые другие факторы кроме самих героев. Это чистый анализ драфта.
 
-Структурируй ответ:
-
-**Преимущество драфта:** [Radiant/Dire]
-**Вероятность победы Radiant по драфту:** [X]%
-**Вероятность победы Dire по драфту:** [Y]%
-
-**Ключевые факторы драфта:**
-1. [Фактор 1]
-2. [Фактор 2]
-3. [Фактор 3]
-
-**Детальный анализ драфта:**
-[1-2 абзаца анализа со ссылками на конкретные данные о героях]
+=== ФОРМАТ ОТВЕТА (JSON) ===
+Ответь валидным JSON-объектом с полями:
+- "draft_advantage": "Radiant", "Dire" или "Equal"
+- "radiant_win_prob": вероятность победы Radiant по драфту (число 0-100)
+- "dire_win_prob": вероятность победы Dire по драфту (число 0-100)
+- "key_factors": массив из 3 строк — ключевые факторы драфта с конкретными цифрами
+- "analysis": детальный анализ драфта (1-2 абзаца, Markdown-разметка, ссылки на данные)
 `)
 }
 
 func writeAnalysisInstructions(sb *strings.Builder) {
 	sb.WriteString(`=== ИНСТРУКЦИИ ПО АНАЛИЗУ ===
-На основе ВСЕХ данных выше предоставь комплексный прогноз матча Dota 2. Проанализируй:
+На основе ВСЕХ данных выше предоставь комплексный прогноз матча Dota 2.
 
-1. **Преимущество драфта**: У какой команды лучше матчапы героев? Учти контрпики, синергии героев внутри каждой команды и как герои масштабируются на разных стадиях игры.
-2. **Сила команд**: У какой команды лучше общий винрейт, рейтинг и текущая форма?
-3. **Личные встречи**: Что говорит история матчей между этими командами?
-4. **Комфорт игроков**: Играют ли игроки на своих комфортных/сигнатурных героях? Насколько они опытны на этих пиках?
-5. **Мета героев**: Сильны ли выбранные герои в текущей мете (высокие винрейты)?
-6. **Командный опыт на героях**: Насколько хорошо каждая команда выступает на своих конкретных пиках?
+ВАЖНО: Каждый фактор имеет фиксированный вес в итоговой оценке. Ты ОБЯЗАН оценить каждый фактор отдельно (кто выигрывает и насколько), а затем вычислить итоговую вероятность как взвешенную сумму.
 
-Структурируй ответ следующим образом:
+=== ВЕСА ФАКТОРОВ ===
+1. Сила и форма команд (25%): Рейтинг, общий W/L, форма в последних 10 матчах. Если одна команда значительно сильнее (разница в рейтинге >200), этот фактор доминирует.
+2. Драфт — матчапы и синергии (20%): Контрпики, комбо героев, масштабирование по стадиям игры. При равных командах это решающий фактор.
+3. Лейн-матчапы (15%): Кто выигрывает каждый лайн (мид 1v1, сайд-лайны 2v2). Раннее преимущество конвертируется в победу в ~60% про-матчей.
+4. Мета патча и турнира (10%): Сильны ли выбранные герои в текущем патче и на этом турнире? Мета-герои vs нишевые пики.
+5. Комфорт игроков на героях (10%): Сигнатурные герои vs непривычные пики. Про-игрок на сигнатуре играет на 5-10% сильнее.
+6. Опыт команды на героях (10%): Как команда перформит на конкретных пиках. Отрепетированные стратегии vs импровизация.
+7. История личных встреч (10%): Психологический фактор, стилистические матчапы. На малой выборке (<5 матчей) вес снижается.
 
-**Прогноз победителя:** [Название команды]
-**Вероятность победы Radiant:** [X]%
-**Вероятность победы Dire:** [Y]%
-**Уверенность:** [Низкая/Средняя/Высокая]
+=== МЕТОДОЛОГИЯ ===
+Базовая вероятность = 50/50. Каждый фактор сдвигает вероятность пропорционально своему весу.
+Для каждого фактора определи: сторону с преимуществом и степень (незначительное/умеренное/значительное).
 
-**Ключевые факторы:**
-1. [Самый важный фактор]
-2. [Второй фактор]
-3. [Третий фактор]
-4. [Четвёртый фактор, если применимо]
-5. [Пятый фактор, если применимо]
-
-**Сильные стороны Radiant:**
-- [сила 1]
-- [сила 2]
-
-**Слабые стороны Radiant:**
-- [слабость 1]
-- [слабость 2]
-
-**Сильные стороны Dire:**
-- [сила 1]
-- [сила 2]
-
-**Слабые стороны Dire:**
-- [слабость 1]
-- [слабость 2]
-
-**Детальный анализ:**
-[2-3 абзаца глубокого анализа со ссылками на конкретные данные]
+=== ФОРМАТ ОТВЕТА (JSON) ===
+Ответь валидным JSON-объектом с полями:
+- "factors": массив из 7 объектов с полями:
+  - "name": название фактора
+  - "weight": вес в процентах (число)
+  - "advantage": "Radiant", "Dire" или "Equal"
+  - "degree": "незначительное", "умеренное" или "значительное"
+  - "reasoning": обоснование (1-2 предложения с конкретными цифрами из данных)
+- "winner": название команды-фаворита
+- "radiant_win_prob": вероятность победы Radiant (число 0-100, допустимы десятичные)
+- "dire_win_prob": вероятность победы Dire (число 0-100, допустимы десятичные)
+- "confidence": "низкая", "средняя" или "высокая"
+- "key_factors": массив из 3-5 строк — ключевые факторы с конкретными цифрами
+- "analysis": детальный анализ (2-3 абзаца, Markdown-разметка, ссылки на конкретные данные)
 `)
 }
 

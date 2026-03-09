@@ -1,6 +1,8 @@
 package analyzer
 
 import (
+	"encoding/json"
+	"log/slog"
 	"regexp"
 	"strconv"
 	"strings"
@@ -8,43 +10,161 @@ import (
 	"dota-predict/internal/models"
 )
 
+// --- JSON response structs (matched by json_schema) ---
+
+type mainAnalysisJSON struct {
+	Factors        []factorJSON `json:"factors"`
+	Winner         string       `json:"winner"`
+	RadiantWinProb float64      `json:"radiant_win_prob"`
+	DireWinProb    float64      `json:"dire_win_prob"`
+	Confidence     string       `json:"confidence"`
+	KeyFactors     []string     `json:"key_factors"`
+	Analysis       string       `json:"analysis"`
+}
+
+type factorJSON struct {
+	Name      string `json:"name"`
+	Weight    int    `json:"weight"`
+	Advantage string `json:"advantage"`
+	Degree    string `json:"degree"`
+	Reasoning string `json:"reasoning"`
+}
+
+type draftAnalysisJSON struct {
+	DraftAdvantage string   `json:"draft_advantage"`
+	RadiantWinProb float64  `json:"radiant_win_prob"`
+	DireWinProb    float64  `json:"dire_win_prob"`
+	KeyFactors     []string `json:"key_factors"`
+	Analysis       string   `json:"analysis"`
+}
+
+// --- Regex fallback patterns ---
+
 var (
-	reRadiantProb    = regexp.MustCompile(`(?i)вероятность победы Radiant[^:]*:\s*\**\s*(\d+(?:[.,]\d+)?)\s*%`)
-	reDireProb       = regexp.MustCompile(`(?i)вероятность победы Dire[^:]*:\s*\**\s*(\d+(?:[.,]\d+)?)\s*%`)
-	reConfidence     = regexp.MustCompile(`(?i)уверенность[^:]*:\s*\**\s*(низкая|средняя|высокая)`)
-	reDraftRadiant   = regexp.MustCompile(`(?i)вероятность победы Radiant по драфту[^:]*:\s*\**\s*(\d+(?:[.,]\d+)?)\s*%`)
-	reDraftDire      = regexp.MustCompile(`(?i)вероятность победы Dire по драфту[^:]*:\s*\**\s*(\d+(?:[.,]\d+)?)\s*%`)
+	reRadiantProb  = regexp.MustCompile(`(?i)вероятность победы Radiant[^:]*:\s*\**\s*(\d+(?:[.,]\d+)?)\s*%`)
+	reDireProb     = regexp.MustCompile(`(?i)вероятность победы Dire[^:]*:\s*\**\s*(\d+(?:[.,]\d+)?)\s*%`)
+	reConfidence   = regexp.MustCompile(`(?i)уверенность[^:]*:\s*\**\s*(низкая|средняя|высокая)`)
+	reDraftRadiant = regexp.MustCompile(`(?i)вероятность победы Radiant по драфту[^:]*:\s*\**\s*(\d+(?:[.,]\d+)?)\s*%`)
+	reDraftDire    = regexp.MustCompile(`(?i)вероятность победы Dire по драфту[^:]*:\s*\**\s*(\d+(?:[.,]\d+)?)\s*%`)
 )
+
+// parsedResult holds all extracted data from LLM responses.
+type parsedResult struct {
+	Betting       models.BettingInfo
+	Analysis      string
+	DraftAnalysis string
+	Factors       []models.FactorAssessment
+}
+
+// parsePrediction extracts probabilities, confidence, factors, and analysis text from LLM output.
+// Tries JSON parsing first (structured output), falls back to regex.
+func parsePrediction(mainText, draftText string) parsedResult {
+	var r parsedResult
+
+	// --- Main analysis ---
+	var mainResp mainAnalysisJSON
+	if err := json.Unmarshal([]byte(mainText), &mainResp); err == nil && mainResp.RadiantWinProb > 0 {
+		r.Betting.RadiantWinProb = mainResp.RadiantWinProb
+		r.Betting.DireWinProb = mainResp.DireWinProb
+		r.Betting.Confidence = strings.ToLower(mainResp.Confidence)
+		r.Analysis = formatMainAnalysis(&mainResp)
+		for _, f := range mainResp.Factors {
+			r.Factors = append(r.Factors, models.FactorAssessment{
+				Name:      f.Name,
+				Weight:    f.Weight,
+				Advantage: f.Advantage,
+				Degree:    f.Degree,
+				Reasoning: f.Reasoning,
+			})
+		}
+		slog.Debug("parse: основной анализ распарсен как JSON",
+			"radiant_prob", r.Betting.RadiantWinProb,
+			"dire_prob", r.Betting.DireWinProb,
+			"factors", len(r.Factors),
+		)
+	} else {
+		// Regex fallback.
+		slog.Warn("parse: JSON не удался, используем regex", "error", err)
+		r.Betting.RadiantWinProb = matchProb(reRadiantProb, mainText)
+		r.Betting.DireWinProb = matchProb(reDireProb, mainText)
+		if m := reConfidence.FindStringSubmatch(mainText); len(m) > 1 {
+			r.Betting.Confidence = strings.ToLower(m[1])
+		}
+		r.Analysis = mainText
+	}
+
+	// --- Draft analysis ---
+	if draftText != "" {
+		var draftResp draftAnalysisJSON
+		if err := json.Unmarshal([]byte(draftText), &draftResp); err == nil && draftResp.RadiantWinProb > 0 {
+			r.Betting.DraftRadiantProb = draftResp.RadiantWinProb
+			r.Betting.DraftDireProb = draftResp.DireWinProb
+			r.DraftAnalysis = draftResp.Analysis
+			slog.Debug("parse: драфт распарсен как JSON",
+				"radiant_prob", r.Betting.DraftRadiantProb,
+				"dire_prob", r.Betting.DraftDireProb,
+			)
+		} else {
+			// Regex fallback.
+			r.Betting.DraftRadiantProb = matchProb(reDraftRadiant, draftText)
+			r.Betting.DraftDireProb = matchProb(reDraftDire, draftText)
+			r.DraftAnalysis = draftText
+		}
+	}
+
+	calcOdds(&r.Betting)
+	return r
+}
+
+// formatMainAnalysis builds a readable Markdown text from structured JSON response.
+func formatMainAnalysis(resp *mainAnalysisJSON) string {
+	var sb strings.Builder
+
+	// Factor assessments.
+	sb.WriteString("**Оценка по факторам:**\n")
+	for _, f := range resp.Factors {
+		sb.WriteString("- ")
+		sb.WriteString(f.Name)
+		sb.WriteString(" (")
+		sb.WriteString(strconv.Itoa(f.Weight))
+		sb.WriteString("%): ")
+		sb.WriteString(f.Advantage)
+		sb.WriteString(", ")
+		sb.WriteString(f.Degree)
+		sb.WriteString(" — ")
+		sb.WriteString(f.Reasoning)
+		sb.WriteString("\n")
+	}
+
+	// Key factors.
+	sb.WriteString("\n**Ключевые факторы:**\n")
+	for i, kf := range resp.KeyFactors {
+		sb.WriteString(strconv.Itoa(i + 1))
+		sb.WriteString(". ")
+		sb.WriteString(kf)
+		sb.WriteString("\n")
+	}
+
+	// Detailed analysis.
+	sb.WriteString("\n**Детальный анализ:**\n")
+	sb.WriteString(resp.Analysis)
+
+	return sb.String()
+}
+
+// matchProb extracts a probability value using a regex pattern.
+func matchProb(re *regexp.Regexp, text string) float64 {
+	m := re.FindStringSubmatch(text)
+	if len(m) > 1 {
+		return parseProb(m[1])
+	}
+	return 0
+}
 
 func parseProb(s string) float64 {
 	s = strings.Replace(s, ",", ".", 1)
 	v, _ := strconv.ParseFloat(s, 64)
 	return v
-}
-
-// parsePrediction extracts probabilities and confidence from LLM text output.
-func parsePrediction(mainText, draftText string) models.BettingInfo {
-	var info models.BettingInfo
-
-	if m := reRadiantProb.FindStringSubmatch(mainText); len(m) > 1 {
-		info.RadiantWinProb = parseProb(m[1])
-	}
-	if m := reDireProb.FindStringSubmatch(mainText); len(m) > 1 {
-		info.DireWinProb = parseProb(m[1])
-	}
-	if m := reConfidence.FindStringSubmatch(mainText); len(m) > 1 {
-		info.Confidence = strings.ToLower(m[1])
-	}
-
-	if m := reDraftRadiant.FindStringSubmatch(draftText); len(m) > 1 {
-		info.DraftRadiantProb = parseProb(m[1])
-	}
-	if m := reDraftDire.FindStringSubmatch(draftText); len(m) > 1 {
-		info.DraftDireProb = parseProb(m[1])
-	}
-
-	calcOdds(&info)
-	return info
 }
 
 func calcOdds(info *models.BettingInfo) {

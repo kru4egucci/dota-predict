@@ -31,6 +31,8 @@ func (c *Collector) CollectMatchData(ctx context.Context, matchID int64) (*model
 
 	data := &models.CollectedData{
 		HeroNames:       make(map[int]string),
+		HeroPatchStats:  make(map[int]*models.HeroPatchStats),
+		HeroLeagueStats: make(map[int]*models.HeroLeagueStats),
 		HeroStats:       make(map[int]*models.HeroStats),
 		HeroMatchups:    make(map[int][]models.HeroMatchup),
 		PlayerHeroStats: make(map[int]*models.PlayerHeroStat),
@@ -111,6 +113,45 @@ func (c *Collector) CollectMatchData(ctx context.Context, matchID int64) (*model
 				return nil
 			}
 			data.HeroMatchups[heroID] = matchups
+			return nil
+		})
+	}
+
+	// Patch meta: determine current patch, then fetch patch-specific hero stats.
+	g.Go(func() error {
+		patch, err := c.od.GetCurrentPatch(gctx)
+		if err != nil {
+			log.Warn("не удалось определить текущий патч", "error", err)
+			return nil
+		}
+		data.Patch = patch
+
+		patchStats, err := c.od.GetHeroStatsByPatch(gctx, patch)
+		if err != nil {
+			log.Warn("не удалось получить статистику патча", "patch", patch, "error", err)
+			return nil
+		}
+		for i, s := range patchStats {
+			data.HeroPatchStats[s.HeroID] = &patchStats[i]
+		}
+		log.Debug("статистика патча загружена", "patch", patch, "heroes", len(patchStats))
+		return nil
+	})
+
+	// League meta: fetch tournament-specific hero stats if this is a league match.
+	if data.Match.LeagueID > 0 {
+		g.Go(func() error {
+			leagueStats, err := c.od.GetHeroLeagueStats(gctx, data.Match.LeagueID)
+			if err != nil {
+				log.Warn("не удалось получить статистику турнира",
+					"league_id", data.Match.LeagueID, "error", err)
+				return nil
+			}
+			for i, s := range leagueStats {
+				data.HeroLeagueStats[s.HeroID] = &leagueStats[i]
+			}
+			log.Debug("статистика турнира загружена",
+				"league_id", data.Match.LeagueID, "heroes", len(leagueStats))
 			return nil
 		})
 	}
@@ -229,8 +270,11 @@ func (c *Collector) CollectMatchData(ctx context.Context, matchID int64) (*model
 	log.Info("сбор данных завершён [3/4]",
 		"duration", time.Since(start).String(),
 		"total_duration", time.Since(totalStart).String(),
+		"patch", data.Patch,
 		"heroes_loaded", len(data.HeroNames),
 		"hero_stats_loaded", len(data.HeroStats),
+		"patch_stats_loaded", len(data.HeroPatchStats),
+		"league_stats_loaded", len(data.HeroLeagueStats),
 		"matchups_loaded", len(data.HeroMatchups),
 	)
 

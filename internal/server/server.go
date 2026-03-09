@@ -303,6 +303,8 @@ func (s *Server) processMatch(ctx context.Context, game *steam.LiveLeagueGame) {
 	}
 }
 
+const separator = "━━━━━━━━━━━━━━━━━━━━━━━━━"
+
 // buildMessage creates the Telegram message based on analysis and odds.
 func (s *Server) buildMessage(pred *models.Prediction, odds *models.MatchOdds, matchID int64) string {
 	var sb strings.Builder
@@ -312,12 +314,11 @@ func (s *Server) buildMessage(pred *models.Prediction, odds *models.MatchOdds, m
 	var betTeam string
 	var betOdds float64
 	var comfortOdds float64
+	var bookmaker string
 
 	if odds != nil && betting.RadiantWinProb > 0 {
-		// Check if any bookmaker odds are >= comfortable odds (value bet).
 		radiantBookOdds := matchOddsForTeam(odds, pred.RadiantTeamName)
 		direBookOdds := matchOddsForTeam(odds, pred.DireTeamName)
-
 		const maxOdds = 3.9
 
 		if radiantBookOdds > 0 && radiantBookOdds <= maxOdds && betting.RadiantComfortOdds > 0 && radiantBookOdds >= betting.RadiantComfortOdds {
@@ -325,14 +326,17 @@ func (s *Server) buildMessage(pred *models.Prediction, odds *models.MatchOdds, m
 			betTeam = pred.RadiantTeamName
 			betOdds = radiantBookOdds
 			comfortOdds = betting.RadiantComfortOdds
+			bookmaker = odds.Bookmaker
 		} else if direBookOdds > 0 && direBookOdds <= maxOdds && betting.DireComfortOdds > 0 && direBookOdds >= betting.DireComfortOdds {
 			hasBet = true
 			betTeam = pred.DireTeamName
 			betOdds = direBookOdds
 			comfortOdds = betting.DireComfortOdds
+			bookmaker = odds.Bookmaker
 		}
 	}
 
+	// --- Header ---
 	if hasBet {
 		slog.Info("найдена ставка",
 			"match_id", matchID,
@@ -340,56 +344,106 @@ func (s *Server) buildMessage(pred *models.Prediction, odds *models.MatchOdds, m
 			"book_odds", betOdds,
 			"comfort_odds", comfortOdds,
 		)
-		sb.WriteString(fmt.Sprintf("<b>СТАВКА: %s vs %s</b>\n", pred.RadiantTeamName, pred.DireTeamName))
+		sb.WriteString(fmt.Sprintf("🎯 <b>СТАВКА: %s vs %s</b>\n", pred.RadiantTeamName, pred.DireTeamName))
 		sb.WriteString(fmt.Sprintf("Match ID: %d\n\n", matchID))
-		sb.WriteString(fmt.Sprintf("Ставка на: <b>%s</b>\n", betTeam))
-		sb.WriteString(fmt.Sprintf("Коэффициент у букмекера: <b>%.2f</b>\n", betOdds))
-		sb.WriteString(fmt.Sprintf("Комфортный коэффициент: %.2f\n", comfortOdds))
-		if odds != nil {
-			sb.WriteString(fmt.Sprintf("Букмекер: %s\n", odds.Bookmaker))
-		}
-		sb.WriteString(fmt.Sprintf("\nВероятность победы %s: %.1f%%\n", pred.RadiantTeamName, betting.RadiantWinProb))
-		sb.WriteString(fmt.Sprintf("Вероятность победы %s: %.1f%%\n", pred.DireTeamName, betting.DireWinProb))
-		if betting.Confidence != "" {
-			sb.WriteString(fmt.Sprintf("Уверенность: %s\n", strings.ToUpper(betting.Confidence)))
+		sb.WriteString(fmt.Sprintf("💰 Ставка на: <b>%s</b>\n", betTeam))
+		sb.WriteString(fmt.Sprintf("📌 Коэффициент: <b>%.2f</b> (букмекер) → %.2f (комфорт)\n", betOdds, comfortOdds))
+		if bookmaker != "" {
+			sb.WriteString(fmt.Sprintf("📎 Букмекер: %s\n", bookmaker))
 		}
 	} else {
-		sb.WriteString(fmt.Sprintf("<b>АНАЛИТИКА: %s vs %s</b>\n", pred.RadiantTeamName, pred.DireTeamName))
-		sb.WriteString(fmt.Sprintf("Match ID: %d\n", matchID))
-		sb.WriteString("\nСтавка не рекомендована (коэффициенты ниже комфортных)\n")
+		sb.WriteString(fmt.Sprintf("📊 <b>АНАЛИТИКА: %s vs %s</b>\n", pred.RadiantTeamName, pred.DireTeamName))
+		sb.WriteString(fmt.Sprintf("Match ID: %d\n\n", matchID))
+		sb.WriteString("Ставка не рекомендована (коэффициенты ниже комфортных)\n")
 	}
 
-	// Odds info.
-	sb.WriteString("\n<b>Коэффициенты:</b>\n")
+	// --- Probabilities ---
+	sb.WriteString("\n")
+	sb.WriteString(separator)
+	sb.WriteString("\n\n")
+
+	if betting.RadiantWinProb > 0 {
+		sb.WriteString("📊 <b>Вероятности:</b>\n")
+		sb.WriteString(fmt.Sprintf("  %s: %.1f%%\n", pred.RadiantTeamName, betting.RadiantWinProb))
+		sb.WriteString(fmt.Sprintf("  %s: %.1f%%\n", pred.DireTeamName, betting.DireWinProb))
+		if betting.Confidence != "" {
+			sb.WriteString(fmt.Sprintf("  Уверенность: %s\n", strings.ToUpper(betting.Confidence)))
+		}
+	}
+
+	if betting.DraftRadiantProb > 0 {
+		sb.WriteString(fmt.Sprintf("\n🎲 <b>Драфт:</b>\n"))
+		sb.WriteString(fmt.Sprintf("  %s: %.1f%%\n", pred.RadiantTeamName, betting.DraftRadiantProb))
+		sb.WriteString(fmt.Sprintf("  %s: %.1f%%\n", pred.DireTeamName, betting.DraftDireProb))
+	}
+
+	// --- Factors ---
+	if len(pred.Factors) > 0 {
+		sb.WriteString("\n")
+		sb.WriteString(separator)
+		sb.WriteString("\n\n")
+		sb.WriteString("⚖️ <b>Оценка по факторам:</b>\n")
+		for i, f := range pred.Factors {
+			emoji := factorEmoji(i)
+			team := advantageLabel(f.Advantage, pred.RadiantTeamName, pred.DireTeamName)
+			sb.WriteString(fmt.Sprintf("  %s %s (%d%%) → %s, %s\n",
+				emoji, f.Name, f.Weight, team, f.Degree))
+		}
+	}
+
+	// --- Odds ---
+	sb.WriteString("\n")
+	sb.WriteString(separator)
+	sb.WriteString("\n\n")
+	sb.WriteString("💲 <b>Коэффициенты:</b>\n")
 	if odds != nil {
 		sb.WriteString(fmt.Sprintf("  %s: %.2f (%s)\n", odds.Team1Name, odds.Team1Odds, odds.Bookmaker))
 		sb.WriteString(fmt.Sprintf("  %s: %.2f (%s)\n", odds.Team2Name, odds.Team2Odds, odds.Bookmaker))
 	} else {
-		sb.WriteString("  Не удалось получить коэффициенты букмекеров\n")
+		sb.WriteString("  Не удалось получить коэффициенты\n")
 	}
 
-	sb.WriteString("\n<b>Расчётные коэффициенты:</b>\n")
-	if betting.RadiantMinOdds > 0 {
-		sb.WriteString(fmt.Sprintf("  %s: мин %.2f / комфорт %.2f\n",
-			pred.RadiantTeamName, betting.RadiantMinOdds, betting.RadiantComfortOdds))
-	}
-	if betting.DireMinOdds > 0 {
-		sb.WriteString(fmt.Sprintf("  %s: мин %.2f / комфорт %.2f\n",
-			pred.DireTeamName, betting.DireMinOdds, betting.DireComfortOdds))
-	}
-
-	// Draft analysis summary (if available, keep it short).
-	if pred.DraftAnalysis != "" && betting.DraftRadiantProb > 0 {
-		sb.WriteString(fmt.Sprintf("\n<b>Драфт:</b> %s %.1f%% — %s %.1f%%\n",
-			pred.RadiantTeamName, betting.DraftRadiantProb,
-			pred.DireTeamName, betting.DraftDireProb))
+	if betting.RadiantMinOdds > 0 || betting.DireMinOdds > 0 {
+		sb.WriteString("\n  <b>Расчётные:</b>\n")
+		if betting.RadiantMinOdds > 0 {
+			sb.WriteString(fmt.Sprintf("  %s: мин %.2f / комфорт %.2f\n",
+				pred.RadiantTeamName, betting.RadiantMinOdds, betting.RadiantComfortOdds))
+		}
+		if betting.DireMinOdds > 0 {
+			sb.WriteString(fmt.Sprintf("  %s: мин %.2f / комфорт %.2f\n",
+				pred.DireTeamName, betting.DireMinOdds, betting.DireComfortOdds))
+		}
 	}
 
-	sb.WriteString("\n<b>Анализ:</b>\n")
-	analysis := telegram.MDToTelegramHTML(pred.Analysis)
-	sb.WriteString(analysis)
+	// --- Analysis ---
+	sb.WriteString("\n")
+	sb.WriteString(separator)
+	sb.WriteString("\n\n")
+	sb.WriteString("📝 <b>Анализ:</b>\n")
+	sb.WriteString(telegram.MDToTelegramHTML(pred.Analysis))
 
 	return sb.String()
+}
+
+// factorEmoji returns an emoji for a factor by its index (0-based).
+func factorEmoji(index int) string {
+	emojis := []string{"🏆", "⚔️", "🛡", "🌍", "🎮", "📋", "🤝"}
+	if index < len(emojis) {
+		return emojis[index]
+	}
+	return "•"
+}
+
+// advantageLabel maps "Radiant"/"Dire"/"Equal" to the actual team name.
+func advantageLabel(advantage, radiantName, direName string) string {
+	switch advantage {
+	case "Radiant":
+		return radiantName
+	case "Dire":
+		return direName
+	default:
+		return "Equal"
+	}
 }
 
 // matchOddsForTeam finds the bookmaker odds for a specific team by fuzzy name matching.
