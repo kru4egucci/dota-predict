@@ -64,7 +64,8 @@ func parsePrediction(mainText, draftText string) parsedResult {
 	// --- Main analysis ---
 	cleanedMain := extractJSON(mainText)
 	var mainResp mainAnalysisJSON
-	if err := json.Unmarshal([]byte(cleanedMain), &mainResp); err == nil && mainResp.RadiantWinProb > 0 {
+	if err := json.Unmarshal([]byte(cleanedMain), &mainResp); err == nil {
+		// JSON parsed successfully — use structured data.
 		r.Betting.RadiantWinProb = mainResp.RadiantWinProb
 		r.Betting.DireWinProb = mainResp.DireWinProb
 		r.Betting.Confidence = strings.ToLower(mainResp.Confidence)
@@ -83,6 +84,13 @@ func parsePrediction(mainText, draftText string) parsedResult {
 			"dire_prob", r.Betting.DireWinProb,
 			"factors", len(r.Factors),
 		)
+		if mainResp.RadiantWinProb <= 0 {
+			slog.Warn("parse: JSON распарсен, но RadiantWinProb <= 0, пробуем regex",
+				"radiant_prob", mainResp.RadiantWinProb,
+			)
+			r.Betting.RadiantWinProb = matchProb(reRadiantProb, mainResp.Analysis)
+			r.Betting.DireWinProb = matchProb(reDireProb, mainResp.Analysis)
+		}
 	} else {
 		// Regex fallback.
 		slog.Warn("parse: JSON не удался, используем regex", "error", err)
@@ -98,7 +106,7 @@ func parsePrediction(mainText, draftText string) parsedResult {
 	if draftText != "" {
 		cleanedDraft := extractJSON(draftText)
 		var draftResp draftAnalysisJSON
-		if err := json.Unmarshal([]byte(cleanedDraft), &draftResp); err == nil && draftResp.RadiantWinProb > 0 {
+		if err := json.Unmarshal([]byte(cleanedDraft), &draftResp); err == nil {
 			r.Betting.DraftRadiantProb = draftResp.RadiantWinProb
 			r.Betting.DraftDireProb = draftResp.DireWinProb
 			r.DraftAnalysis = draftResp.Analysis
