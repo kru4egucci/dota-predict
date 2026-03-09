@@ -127,9 +127,12 @@ func formatMainAnalysis(resp *mainAnalysisJSON) string {
 		sb.WriteString(f.Name)
 		sb.WriteString("** → ")
 		sb.WriteString(f.Advantage)
-		sb.WriteString(", ")
-		sb.WriteString(f.Degree)
-		sb.WriteString(" преимущество\n")
+		if !strings.EqualFold(f.Advantage, "Equal") {
+			sb.WriteString(", ")
+			sb.WriteString(f.Degree)
+			sb.WriteString(" преимущество")
+		}
+		sb.WriteString("\n")
 		sb.WriteString("    ")
 		sb.WriteString(f.Reasoning)
 		sb.WriteString("\n\n")
