@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"dota-predict/internal/analyzer"
+	"dota-predict/internal/api/gsheets"
 	"dota-predict/internal/api/oddspapi"
 	"dota-predict/internal/api/opendota"
 	"dota-predict/internal/api/openrouter"
@@ -104,7 +105,27 @@ func runServer(cfg *config.Config) {
 		oddsClient = oddspapi.NewClient(cfg.OddsPapiAPIKey, cfg.ProxiedHTTPClient(30*time.Second))
 	}
 
-	srv := server.New(odClient, steamClient, orClient, oddsClient, tgClient)
+	var gsheetsClient *gsheets.Client
+	if cfg.GoogleServiceAccountFile != "" {
+		spreadsheetID := cfg.GoogleSpreadsheetID
+		if spreadsheetID == "" {
+			spreadsheetID = "1s1db7iEIpt-2UYlyri_o0ucNf-z3larAHvM_KFES_JI"
+		}
+		sheetName := cfg.GoogleSheetName
+		if sheetName == "" {
+			sheetName = "PGL Wallachia S7"
+		}
+		var err error
+		gsheetsClient, err = gsheets.NewClient(cfg.GoogleServiceAccountFile, spreadsheetID, sheetName)
+		if err != nil {
+			slog.Error("ошибка инициализации Google Sheets", "error", err)
+			// Non-fatal: continue without Sheets integration.
+		} else if gsheetsClient != nil {
+			slog.Info("Google Sheets интеграция активна", "sheet", sheetName)
+		}
+	}
+
+	srv := server.New(odClient, steamClient, orClient, oddsClient, tgClient, gsheetsClient)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()

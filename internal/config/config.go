@@ -18,8 +18,11 @@ type Config struct {
 	SteamAPIKey      string
 	OddsPapiAPIKey   string
 	TelegramBotToken string
-	TelegramChatID   string
-	ProxyURL         string
+	TelegramChatID           string
+	ProxyURL                 string
+	GoogleServiceAccountFile string
+	GoogleSpreadsheetID      string
+	GoogleSheetName          string
 }
 
 // Load reads configuration from .env file (if present) and environment variables.
@@ -45,7 +48,10 @@ func Load() (*Config, error) {
 		OddsPapiAPIKey:   os.Getenv("ODDSPAPI_API_KEY"),
 		TelegramBotToken: os.Getenv("TELEGRAM_BOT_TOKEN"),
 		TelegramChatID:   os.Getenv("TELEGRAM_CHAT_ID"),
-		ProxyURL:         os.Getenv("PROXY_URL"),
+		ProxyURL:                 os.Getenv("PROXY_URL"),
+		GoogleServiceAccountFile: os.Getenv("GOOGLE_SERVICE_ACCOUNT_FILE"),
+		GoogleSpreadsheetID:      os.Getenv("GOOGLE_SPREADSHEET_ID"),
+		GoogleSheetName:          os.Getenv("GOOGLE_SHEET_NAME"),
 	}, nil
 }
 

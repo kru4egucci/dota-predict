@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"dota-predict/internal/analyzer"
+	"dota-predict/internal/api/gsheets"
 	"dota-predict/internal/api/oddspapi"
 	"dota-predict/internal/api/opendota"
 	"dota-predict/internal/api/openrouter"
@@ -23,13 +24,14 @@ const pollInterval = 30 * time.Second
 
 // Server monitors live Dota 2 tournament matches via Steam API and sends predictions to Telegram.
 type Server struct {
-	odClient    *opendota.Client
-	steamClient *steam.Client
-	orClient    *openrouter.Client
-	oddsClient  *oddspapi.Client
-	tgClient    *telegram.Client
-	coll        *collector.Collector
-	ana         *analyzer.Analyzer
+	odClient      *opendota.Client
+	steamClient   *steam.Client
+	orClient      *openrouter.Client
+	oddsClient    *oddspapi.Client
+	tgClient      *telegram.Client
+	gsheetsClient *gsheets.Client
+	coll          *collector.Collector
+	ana           *analyzer.Analyzer
 
 	mu        sync.Mutex
 	processed map[int64]bool // match IDs already processed
@@ -42,16 +44,18 @@ func New(
 	orClient *openrouter.Client,
 	oddsClient *oddspapi.Client,
 	tgClient *telegram.Client,
+	gsheetsClient *gsheets.Client,
 ) *Server {
 	return &Server{
-		odClient:    odClient,
-		steamClient: steamClient,
-		orClient:    orClient,
-		oddsClient:  oddsClient,
-		tgClient:    tgClient,
-		coll:        collector.New(odClient, steamClient),
-		ana:         analyzer.New(orClient),
-		processed:   make(map[int64]bool),
+		odClient:      odClient,
+		steamClient:   steamClient,
+		orClient:      orClient,
+		oddsClient:    oddsClient,
+		tgClient:      tgClient,
+		gsheetsClient: gsheetsClient,
+		coll:          collector.New(odClient, steamClient),
+		ana:           analyzer.New(orClient),
+		processed:     make(map[int64]bool),
 	}
 }
 
@@ -68,6 +72,9 @@ func (s *Server) Run(ctx context.Context) error {
 	if s.oddsClient != nil {
 		s.oddsClient.StartPeriodicRefresh(ctx)
 	}
+
+	// Start hourly result checker for Google Sheets.
+	s.startResultChecker(ctx)
 
 	// Run immediately on start, then every pollInterval.
 	s.tick(ctx)
@@ -301,6 +308,30 @@ func (s *Server) processMatch(ctx context.Context, game *steam.LiveLeagueGame) {
 			"total_duration", time.Since(matchStart).String(),
 			"has_bet", bet.hasBet,
 		)
+	}
+
+	// Record bet to Google Sheets.
+	if s.gsheetsClient != nil && bet.hasBet {
+		odds := bet.betOdds
+		if odds == 0 {
+			odds = bet.comfortOdds
+		}
+		row := &gsheets.BetRow{
+			Date:    time.Now().Format("02.01.2006"),
+			Event:   fmt.Sprintf("map %d", gameNumber),
+			Team1:   radiantName,
+			Team2:   direName,
+			BetOn:   bet.betTeam,
+			Amount:  1000,
+			Odds:    odds,
+			MatchID: matchID,
+		}
+		if err := s.gsheetsClient.AppendBetRow(ctx, row); err != nil {
+			log.Error("ошибка записи ставки в Google Sheets", "error", err)
+		} else {
+			log.Info("ставка записана в Google Sheets",
+				"team", bet.betTeam, "odds", odds, "match_id", matchID)
+		}
 	}
 
 	// // If no bet was found, start background odds watcher for 10 minutes.
@@ -588,6 +619,87 @@ func (s *Server) sendError(ctx context.Context, matchID int64, radiant, dire str
 			"match_id", matchID,
 			"original_error", err,
 			"send_error", sendErr,
+		)
+	}
+}
+
+// startResultChecker launches a background goroutine that checks pending bet results every hour.
+func (s *Server) startResultChecker(ctx context.Context) {
+	if s.gsheetsClient == nil {
+		return
+	}
+	slog.Info("запуск проверки результатов ставок", "interval", "1h")
+
+	go func() {
+		// Initial check after 2 minutes (let the server warm up).
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(2 * time.Minute):
+			s.checkResults(ctx)
+		}
+
+		ticker := time.NewTicker(1 * time.Hour)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				s.checkResults(ctx)
+			}
+		}
+	}()
+}
+
+// checkResults reads pending bets from Google Sheets and fills in results for finished matches.
+func (s *Server) checkResults(ctx context.Context) {
+	log := slog.With("component", "result_checker")
+	log.Info("проверка незавершённых ставок")
+
+	pending, err := s.gsheetsClient.GetPendingRows(ctx)
+	if err != nil {
+		log.Error("ошибка чтения Google Sheets", "error", err)
+		return
+	}
+
+	if len(pending) == 0 {
+		log.Info("нет незавершённых ставок")
+		return
+	}
+	log.Info("найдено незавершённых ставок", "count", len(pending))
+
+	for _, row := range pending {
+		match, err := s.odClient.GetMatch(ctx, row.MatchID)
+		if err != nil {
+			log.Debug("матч ещё не доступен", "match_id", row.MatchID, "error", err)
+			continue
+		}
+
+		// Determine the winning team name.
+		// Team1 in the sheet is always the radiant team.
+		var winner string
+		if match.RadiantWin {
+			winner = row.Team1
+		} else {
+			winner = row.Team2
+		}
+
+		result := "L"
+		if fuzzyContains(strings.ToLower(winner), strings.ToLower(row.BetTeam)) {
+			result = "W"
+		}
+
+		if err := s.gsheetsClient.WriteResult(ctx, row.RowNumber, result); err != nil {
+			log.Error("ошибка записи результата", "match_id", row.MatchID, "row", row.RowNumber, "error", err)
+			continue
+		}
+
+		log.Info("результат записан",
+			"match_id", row.MatchID,
+			"result", result,
+			"winner", winner,
+			"bet_team", row.BetTeam,
 		)
 	}
 }
