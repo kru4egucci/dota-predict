@@ -62,8 +62,9 @@ func parsePrediction(mainText, draftText string) parsedResult {
 	var r parsedResult
 
 	// --- Main analysis ---
+	cleanedMain := extractJSON(mainText)
 	var mainResp mainAnalysisJSON
-	if err := json.Unmarshal([]byte(mainText), &mainResp); err == nil && mainResp.RadiantWinProb > 0 {
+	if err := json.Unmarshal([]byte(cleanedMain), &mainResp); err == nil && mainResp.RadiantWinProb > 0 {
 		r.Betting.RadiantWinProb = mainResp.RadiantWinProb
 		r.Betting.DireWinProb = mainResp.DireWinProb
 		r.Betting.Confidence = strings.ToLower(mainResp.Confidence)
@@ -95,8 +96,9 @@ func parsePrediction(mainText, draftText string) parsedResult {
 
 	// --- Draft analysis ---
 	if draftText != "" {
+		cleanedDraft := extractJSON(draftText)
 		var draftResp draftAnalysisJSON
-		if err := json.Unmarshal([]byte(draftText), &draftResp); err == nil && draftResp.RadiantWinProb > 0 {
+		if err := json.Unmarshal([]byte(cleanedDraft), &draftResp); err == nil && draftResp.RadiantWinProb > 0 {
 			r.Betting.DraftRadiantProb = draftResp.RadiantWinProb
 			r.Betting.DraftDireProb = draftResp.DireWinProb
 			r.DraftAnalysis = draftResp.Analysis
@@ -153,6 +155,37 @@ func formatMainAnalysis(resp *mainAnalysisJSON) string {
 	sb.WriteString(resp.Analysis)
 
 	return sb.String()
+}
+
+// extractJSON tries to extract a JSON object from text that may be wrapped
+// in markdown code fences (```json ... ```) or contain surrounding text.
+func extractJSON(text string) string {
+	trimmed := strings.TrimSpace(text)
+
+	// Already valid JSON?
+	if strings.HasPrefix(trimmed, "{") {
+		return trimmed
+	}
+
+	// Try to extract from markdown code fences.
+	if idx := strings.Index(trimmed, "```"); idx >= 0 {
+		start := strings.Index(trimmed[idx+3:], "\n")
+		if start >= 0 {
+			inner := trimmed[idx+3+start+1:]
+			if end := strings.Index(inner, "```"); end >= 0 {
+				return strings.TrimSpace(inner[:end])
+			}
+		}
+	}
+
+	// Try to find first { ... last }.
+	if first := strings.Index(trimmed, "{"); first >= 0 {
+		if last := strings.LastIndex(trimmed, "}"); last > first {
+			return trimmed[first : last+1]
+		}
+	}
+
+	return text
 }
 
 // matchProb extracts a probability value using a regex pattern.
