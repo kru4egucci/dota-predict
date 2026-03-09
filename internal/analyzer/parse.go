@@ -121,24 +121,24 @@ func formatMainAnalysis(resp *mainAnalysisJSON) string {
 	var sb strings.Builder
 
 	// Factor assessments.
-	sb.WriteString("**Оценка по факторам:**\n")
+	sb.WriteString("**Оценка по факторам:**\n\n")
 	for _, f := range resp.Factors {
-		sb.WriteString("- ")
+		sb.WriteString("  • **")
 		sb.WriteString(f.Name)
-		sb.WriteString(" (")
-		sb.WriteString(strconv.Itoa(f.Weight))
-		sb.WriteString("%): ")
+		sb.WriteString("** → ")
 		sb.WriteString(f.Advantage)
 		sb.WriteString(", ")
 		sb.WriteString(f.Degree)
-		sb.WriteString(" — ")
+		sb.WriteString(" преимущество\n")
+		sb.WriteString("    ")
 		sb.WriteString(f.Reasoning)
-		sb.WriteString("\n")
+		sb.WriteString("\n\n")
 	}
 
 	// Key factors.
-	sb.WriteString("\n**Ключевые факторы:**\n")
+	sb.WriteString("**Ключевые факторы:**\n\n")
 	for i, kf := range resp.KeyFactors {
+		sb.WriteString("  ")
 		sb.WriteString(strconv.Itoa(i + 1))
 		sb.WriteString(". ")
 		sb.WriteString(kf)
@@ -146,7 +146,7 @@ func formatMainAnalysis(resp *mainAnalysisJSON) string {
 	}
 
 	// Detailed analysis.
-	sb.WriteString("\n**Детальный анализ:**\n")
+	sb.WriteString("\n**Детальный анализ:**\n\n")
 	sb.WriteString(resp.Analysis)
 
 	return sb.String()

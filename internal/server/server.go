@@ -386,8 +386,8 @@ func (s *Server) buildMessage(pred *models.Prediction, odds *models.MatchOdds, m
 		for i, f := range pred.Factors {
 			emoji := factorEmoji(i)
 			team := advantageLabel(f.Advantage, pred.RadiantTeamName, pred.DireTeamName)
-			sb.WriteString(fmt.Sprintf("  %s %s (%d%%) → %s, %s\n",
-				emoji, f.Name, f.Weight, team, f.Degree))
+			sb.WriteString(fmt.Sprintf("  %s %s → %s, %s преимущество\n",
+				emoji, f.Name, team, f.Degree))
 		}
 	}
 
