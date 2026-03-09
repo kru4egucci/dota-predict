@@ -58,8 +58,21 @@ func NewClient(credentialsFile, spreadsheetID, sheetName string) (*Client, error
 	}, nil
 }
 
-// AppendBetRow writes a new bet row to the first empty row in the sheet.
+// AppendBetRow writes a new bet row to the first empty row in column A (after header).
 func (c *Client) AppendBetRow(ctx context.Context, row *BetRow) error {
+	// Find the first empty row by reading column A.
+	colA := fmt.Sprintf("'%s'!A:A", c.sheetName)
+	resp, err := c.service.Get(c.spreadsheetID, colA).Context(ctx).Do()
+	if err != nil {
+		return fmt.Errorf("чтение колонки A из Google Sheets: %w", err)
+	}
+
+	// Next row = number of non-empty rows in column A + 1 (1-based).
+	targetRow := len(resp.Values) + 1
+	if targetRow < 2 {
+		targetRow = 2 // minimum: right after header
+	}
+
 	profitFormula := `=IF(INDIRECT("H"&ROW())="W",INDIRECT("F"&ROW())*INDIRECT("G"&ROW())-INDIRECT("F"&ROW()),IF(INDIRECT("H"&ROW())="L",-INDIRECT("F"&ROW()),""))`
 
 	values := []interface{}{
@@ -75,14 +88,13 @@ func (c *Client) AppendBetRow(ctx context.Context, row *BetRow) error {
 		row.MatchID,    // Column J — match ID for result checking
 	}
 
-	rangeStr := fmt.Sprintf("'%s'!A:J", c.sheetName)
+	rangeStr := fmt.Sprintf("'%s'!A%d:J%d", c.sheetName, targetRow, targetRow)
 	vr := &sheets.ValueRange{
 		Values: [][]interface{}{values},
 	}
 
-	_, err := c.service.Append(c.spreadsheetID, rangeStr, vr).
+	_, err = c.service.Update(c.spreadsheetID, rangeStr, vr).
 		ValueInputOption("USER_ENTERED").
-		InsertDataOption("INSERT_ROWS").
 		Context(ctx).
 		Do()
 	if err != nil {
