@@ -7,8 +7,8 @@ type ChatRequest struct {
 	Model          string          `json:"model"`
 	Messages       []ChatMessage   `json:"messages"`
 	Temperature    *float64        `json:"temperature,omitempty"`
-	MaxTokens      *int            `json:"max_tokens,omitempty"`
 	Reasoning      *Reasoning      `json:"reasoning,omitempty"`
+	Verbosity      string          `json:"verbosity,omitempty"`
 	ResponseFormat *ResponseFormat `json:"response_format,omitempty"`
 }
 

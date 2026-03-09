@@ -105,10 +105,7 @@ func (a *Analyzer) Predict(ctx context.Context, data *models.CollectedData) (*mo
 	prompt := buildPrompt(data)
 	draftPrompt := buildDraftPrompt(data)
 
-	slog.Info("отправка данных в LLM [4/4]",
-		"prompt_length", len(prompt),
-		"draft_prompt_length", len(draftPrompt),
-	)
+	slog.Info("отправка данных в LLM [4/4]")
 
 	type llmResult struct {
 		text string
@@ -134,12 +131,7 @@ func (a *Analyzer) Predict(ctx context.Context, data *models.CollectedData) (*mo
 			mainCh <- llmResult{err: fmt.Errorf("LLM returned no response")}
 			return
 		}
-		slog.Info("основной LLM анализ завершён",
-			"duration", time.Since(start).String(),
-			"response_length", len(resp.Choices[0].Message.Content),
-			"prompt_tokens", resp.Usage.PromptTokens,
-			"completion_tokens", resp.Usage.CompletionTokens,
-		)
+		slog.Info("основной LLM анализ завершён", "duration", time.Since(start).String())
 		mainCh <- llmResult{text: resp.Choices[0].Message.Content}
 	}()
 
@@ -159,12 +151,7 @@ func (a *Analyzer) Predict(ctx context.Context, data *models.CollectedData) (*mo
 			draftCh <- llmResult{err: fmt.Errorf("LLM returned no response for draft")}
 			return
 		}
-		slog.Info("LLM анализ драфта завершён",
-			"duration", time.Since(start).String(),
-			"response_length", len(resp.Choices[0].Message.Content),
-			"prompt_tokens", resp.Usage.PromptTokens,
-			"completion_tokens", resp.Usage.CompletionTokens,
-		)
+		slog.Info("LLM анализ драфта завершён", "duration", time.Since(start).String())
 		draftCh <- llmResult{text: resp.Choices[0].Message.Content}
 	}()
 
@@ -210,8 +197,6 @@ func (a *Analyzer) Predict(ctx context.Context, data *models.CollectedData) (*mo
 	slog.Info("прогноз сформирован",
 		"radiant", prediction.RadiantTeamName,
 		"dire", prediction.DireTeamName,
-		"radiant_prob", prediction.Betting.RadiantWinProb,
-		"dire_prob", prediction.Betting.DireWinProb,
 		"confidence", prediction.Betting.Confidence,
 	)
 

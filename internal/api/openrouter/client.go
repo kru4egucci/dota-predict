@@ -37,14 +37,13 @@ func NewClient(apiKey, model string) *Client {
 // If responseFormat is non-nil, the model is instructed to return structured output.
 func (c *Client) ChatCompletion(ctx context.Context, messages []models.ChatMessage, responseFormat *models.ResponseFormat) (*models.ChatResponse, error) {
 	temp := c.temperature
-	maxTokens := 4096
 
 	body := models.ChatRequest{
 		Model:       c.model,
 		Messages:    messages,
 		Temperature: &temp,
-		MaxTokens:   &maxTokens,
 		Reasoning:   &models.Reasoning{Effort: "high"},
+		Verbosity:   "low",
 	}
 
 	if responseFormat != nil {
@@ -56,13 +55,7 @@ func (c *Client) ChatCompletion(ctx context.Context, messages []models.ChatMessa
 		return nil, fmt.Errorf("marshaling request: %w", err)
 	}
 
-	slog.Debug("openrouter: отправка запроса",
-		"model", c.model,
-		"messages_count", len(messages),
-		"request_size", len(jsonBody),
-		"temperature", temp,
-		"has_response_format", responseFormat != nil,
-	)
+	slog.Debug("openrouter: отправка запроса", "model", c.model, "request_size", len(jsonBody))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(jsonBody))
 	if err != nil {
@@ -79,50 +72,24 @@ func (c *Client) ChatCompletion(ctx context.Context, messages []models.ChatMessa
 	elapsed := time.Since(start)
 
 	if err != nil {
-		slog.Error("openrouter: ошибка HTTP запроса",
-			"model", c.model,
-			"duration", elapsed.String(),
-			"error", err,
-		)
+		slog.Error("openrouter: ошибка HTTP запроса", "error", err, "duration", elapsed.String())
 		return nil, fmt.Errorf("sending request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
-		slog.Error("openrouter: неуспешный HTTP статус",
-			"model", c.model,
-			"status", resp.StatusCode,
-			"body", string(respBody),
-			"duration", elapsed.String(),
-		)
+		slog.Error("openrouter: HTTP ошибка", "status", resp.StatusCode, "body", string(respBody))
 		return nil, fmt.Errorf("OpenRouter API returned status %d: %s", resp.StatusCode, string(respBody))
 	}
 
 	var chatResp models.ChatResponse
 	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
-		slog.Error("openrouter: ошибка декодирования ответа",
-			"model", c.model,
-			"duration", elapsed.String(),
-			"error", err,
-		)
+		slog.Error("openrouter: ошибка декодирования", "error", err)
 		return nil, fmt.Errorf("decoding response: %w", err)
 	}
 
-	responseLen := 0
-	if len(chatResp.Choices) > 0 {
-		responseLen = len(chatResp.Choices[0].Message.Content)
-	}
-
-	slog.Debug("openrouter: ответ получен",
-		"model", c.model,
-		"status", resp.StatusCode,
-		"duration", elapsed.String(),
-		"choices", len(chatResp.Choices),
-		"response_length", responseLen,
-		"prompt_tokens", chatResp.Usage.PromptTokens,
-		"completion_tokens", chatResp.Usage.CompletionTokens,
-	)
+	slog.Debug("openrouter: ответ получен", "duration", elapsed.String(), "tokens", chatResp.Usage.TotalTokens)
 
 	return &chatResp, nil
 }

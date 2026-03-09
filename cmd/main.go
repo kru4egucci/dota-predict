@@ -38,13 +38,7 @@ func main() {
 		os.Exit(1)
 	}
 
-	slog.Info("конфигурация загружена",
-		"model", cfg.OpenRouterModel,
-		"steam_configured", cfg.SteamAPIKey != "",
-		"oddspapi_configured", cfg.OddsPapiAPIKey != "",
-		"proxy_configured", cfg.ProxyURL != "",
-		"mode", os.Args[1],
-	)
+	slog.Info("конфигурация загружена", "model", cfg.OpenRouterModel, "mode", os.Args[1])
 
 	if isServer {
 		runServer(cfg)
