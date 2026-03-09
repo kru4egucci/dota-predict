@@ -607,6 +607,36 @@ func (c *Client) fetchOddsResponse(ctx context.Context, fixtureID string) (*mode
 	return &resp, nil
 }
 
+// InvalidateOddsCacheForMatch removes cached odds for a specific match so the next
+// FindMatchOdds call fetches fresh data. Uses only the in-memory fixture cache (no HTTP).
+func (c *Client) InvalidateOddsCacheForMatch(team1, team2 string, gameNumber int) {
+	cacheKey := normalizeCacheKey(team1, team2)
+
+	c.mu.Lock()
+	cached, ok := c.cache[cacheKey]
+	c.mu.Unlock()
+
+	if !ok || cached.fixture == nil {
+		return
+	}
+
+	key := oddsCacheKey(cached.fixture.FixtureID, gameNumber)
+	c.oddsMu.Lock()
+	delete(c.oddsCache, key)
+	c.oddsMu.Unlock()
+
+	slog.Debug("oddspapi: кеш коэффициентов инвалидирован",
+		"fixture_id", cached.fixture.FixtureID,
+		"game_number", gameNumber,
+	)
+}
+
+// FindMatchOddsFresh invalidates the odds cache and fetches fresh odds.
+func (c *Client) FindMatchOddsFresh(ctx context.Context, team1, team2 string, gameNumber int) (*models.MatchOdds, error) {
+	c.InvalidateOddsCacheForMatch(team1, team2, gameNumber)
+	return c.FindMatchOdds(ctx, team1, team2, gameNumber)
+}
+
 func stripCommon(s string) string {
 	s = strings.TrimSpace(s)
 	for _, prefix := range []string{"team ", "esports", "gaming"} {

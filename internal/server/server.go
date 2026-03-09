@@ -289,7 +289,8 @@ func (s *Server) processMatch(ctx context.Context, game *steam.LiveLeagueGame) {
 		log.Warn("матч обработан без коэффициентов", "odds_error", oRes.err)
 	}
 
-	msg := s.buildMessage(prediction, oRes.odds, matchID)
+	bet := checkBet(prediction, oRes.odds)
+	msg := s.buildMessage(prediction, oRes.odds, matchID, bet)
 
 	log.Debug("отправка уведомления в Telegram", "message_length", len(msg))
 	if err := s.tgClient.SendMessage(ctx, msg); err != nil {
@@ -298,58 +299,79 @@ func (s *Server) processMatch(ctx context.Context, game *steam.LiveLeagueGame) {
 	} else {
 		log.Info("обработка матча завершена, уведомление отправлено",
 			"total_duration", time.Since(matchStart).String(),
-			"has_bet", oRes.odds != nil && prediction.Betting.RadiantWinProb > 0,
+			"has_bet", bet.hasBet,
 		)
 	}
+
+	// If no bet was found, start background odds watcher for 10 minutes.
+	if !bet.hasBet && s.oddsClient != nil {
+		go s.watchOdds(ctx, prediction, radiantName, direName, gameNumber, matchID)
+	}
+}
+
+// betResult holds the outcome of a betting decision check.
+type betResult struct {
+	hasBet      bool
+	betTeam     string
+	betOdds     float64
+	comfortOdds float64
+	bookmaker   string
+}
+
+// checkBet evaluates whether bookmaker odds meet the comfort threshold for a bet.
+func checkBet(pred *models.Prediction, odds *models.MatchOdds) betResult {
+	if odds == nil || pred.Betting.RadiantWinProb <= 0 {
+		return betResult{}
+	}
+
+	betting := &pred.Betting
+	radiantBookOdds := matchOddsForTeam(odds, pred.RadiantTeamName)
+	direBookOdds := matchOddsForTeam(odds, pred.DireTeamName)
+	const maxOdds = 3.9
+
+	if radiantBookOdds > 0 && radiantBookOdds <= maxOdds && betting.RadiantComfortOdds > 0 && radiantBookOdds >= betting.RadiantComfortOdds {
+		return betResult{
+			hasBet:      true,
+			betTeam:     pred.RadiantTeamName,
+			betOdds:     radiantBookOdds,
+			comfortOdds: betting.RadiantComfortOdds,
+			bookmaker:   odds.Bookmaker,
+		}
+	}
+	if direBookOdds > 0 && direBookOdds <= maxOdds && betting.DireComfortOdds > 0 && direBookOdds >= betting.DireComfortOdds {
+		return betResult{
+			hasBet:      true,
+			betTeam:     pred.DireTeamName,
+			betOdds:     direBookOdds,
+			comfortOdds: betting.DireComfortOdds,
+			bookmaker:   odds.Bookmaker,
+		}
+	}
+
+	return betResult{}
 }
 
 const separator = "━━━━━━━━━━━━━━━━━━━━━━━━━"
 
 // buildMessage creates the Telegram message based on analysis and odds.
-func (s *Server) buildMessage(pred *models.Prediction, odds *models.MatchOdds, matchID int64) string {
+func (s *Server) buildMessage(pred *models.Prediction, odds *models.MatchOdds, matchID int64, bet betResult) string {
 	var sb strings.Builder
 	betting := &pred.Betting
 
-	hasBet := false
-	var betTeam string
-	var betOdds float64
-	var comfortOdds float64
-	var bookmaker string
-
-	if odds != nil && betting.RadiantWinProb > 0 {
-		radiantBookOdds := matchOddsForTeam(odds, pred.RadiantTeamName)
-		direBookOdds := matchOddsForTeam(odds, pred.DireTeamName)
-		const maxOdds = 3.9
-
-		if radiantBookOdds > 0 && radiantBookOdds <= maxOdds && betting.RadiantComfortOdds > 0 && radiantBookOdds >= betting.RadiantComfortOdds {
-			hasBet = true
-			betTeam = pred.RadiantTeamName
-			betOdds = radiantBookOdds
-			comfortOdds = betting.RadiantComfortOdds
-			bookmaker = odds.Bookmaker
-		} else if direBookOdds > 0 && direBookOdds <= maxOdds && betting.DireComfortOdds > 0 && direBookOdds >= betting.DireComfortOdds {
-			hasBet = true
-			betTeam = pred.DireTeamName
-			betOdds = direBookOdds
-			comfortOdds = betting.DireComfortOdds
-			bookmaker = odds.Bookmaker
-		}
-	}
-
 	// --- Header ---
-	if hasBet {
+	if bet.hasBet {
 		slog.Info("найдена ставка",
 			"match_id", matchID,
-			"bet_team", betTeam,
-			"book_odds", betOdds,
-			"comfort_odds", comfortOdds,
+			"bet_team", bet.betTeam,
+			"book_odds", bet.betOdds,
+			"comfort_odds", bet.comfortOdds,
 		)
 		sb.WriteString(fmt.Sprintf("🎯 <b>СТАВКА: %s vs %s</b>\n", pred.RadiantTeamName, pred.DireTeamName))
 		sb.WriteString(fmt.Sprintf("Match ID: %d\n\n", matchID))
-		sb.WriteString(fmt.Sprintf("💰 Ставка на: <b>%s</b>\n", betTeam))
-		sb.WriteString(fmt.Sprintf("📌 Коэффициент: <b>%.2f</b> (букмекер) → %.2f (комфорт)\n", betOdds, comfortOdds))
-		if bookmaker != "" {
-			sb.WriteString(fmt.Sprintf("📎 Букмекер: %s\n", bookmaker))
+		sb.WriteString(fmt.Sprintf("💰 Ставка на: <b>%s</b>\n", bet.betTeam))
+		sb.WriteString(fmt.Sprintf("📌 Коэффициент: <b>%.2f</b> (букмекер) → %.2f (комфорт)\n", bet.betOdds, bet.comfortOdds))
+		if bet.bookmaker != "" {
+			sb.WriteString(fmt.Sprintf("📎 Букмекер: %s\n", bet.bookmaker))
 		}
 	} else {
 		sb.WriteString(fmt.Sprintf("📊 <b>АНАЛИТИКА: %s vs %s</b>\n", pred.RadiantTeamName, pred.DireTeamName))
@@ -474,6 +496,90 @@ func fuzzyContains(a, b string) bool {
 	a2 := strip(a)
 	b2 := strip(b)
 	return a2 == b2 || strings.Contains(a2, b2) || strings.Contains(b2, a2)
+}
+
+const (
+	oddsWatchDuration = 10 * time.Minute
+	oddsWatchInterval = 1 * time.Minute
+)
+
+// watchOdds polls for bookmaker odds every minute for up to 10 minutes after a match
+// prediction was sent without a bet. If suitable odds appear, sends a bet notification.
+// The prediction is read-only (immutable after creation), so no mutex is needed for it.
+func (s *Server) watchOdds(ctx context.Context, pred *models.Prediction, radiantName, direName string, gameNumber int, matchID int64) {
+	log := slog.With("match_id", matchID, "radiant", radiantName, "dire", direName)
+	log.Info("запуск отслеживания коэффициентов",
+		"watch_duration", oddsWatchDuration.String(),
+		"poll_interval", oddsWatchInterval.String(),
+	)
+
+	deadline := time.NewTimer(oddsWatchDuration)
+	defer deadline.Stop()
+
+	ticker := time.NewTicker(oddsWatchInterval)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Info("отслеживание коэффициентов отменено", "reason", ctx.Err())
+			return
+		case <-deadline.C:
+			log.Info("отслеживание коэффициентов завершено — время вышло")
+			return
+		case <-ticker.C:
+			odds, err := s.oddsClient.FindMatchOddsFresh(ctx, radiantName, direName, gameNumber)
+			if err != nil {
+				log.Debug("коэффициенты ещё недоступны", "error", err)
+				continue
+			}
+
+			bet := checkBet(pred, odds)
+			if !bet.hasBet {
+				log.Debug("коэффициенты получены, но ставка не рекомендована",
+					"team1", odds.Team1Name, "odds1", odds.Team1Odds,
+					"team2", odds.Team2Name, "odds2", odds.Team2Odds,
+				)
+				continue
+			}
+
+			log.Info("найдена ставка при отслеживании коэффициентов",
+				"team", bet.betTeam,
+				"book_odds", bet.betOdds,
+				"comfort_odds", bet.comfortOdds,
+				"bookmaker", bet.bookmaker,
+			)
+
+			msg := s.buildBetNotification(pred, odds, matchID, bet)
+			if err := s.tgClient.SendMessage(ctx, msg); err != nil {
+				log.Error("ошибка отправки ставки в Telegram", "error", err)
+			} else {
+				log.Info("уведомление о ставке отправлено")
+			}
+			return
+		}
+	}
+}
+
+// buildBetNotification creates a compact Telegram message for a delayed bet signal.
+func (s *Server) buildBetNotification(pred *models.Prediction, odds *models.MatchOdds, matchID int64, bet betResult) string {
+	var sb strings.Builder
+	sb.WriteString(fmt.Sprintf("🎯 <b>СТАВКА (отложенная): %s vs %s</b>\n", pred.RadiantTeamName, pred.DireTeamName))
+	sb.WriteString(fmt.Sprintf("Match ID: %d\n\n", matchID))
+	sb.WriteString(fmt.Sprintf("💰 Ставка на: <b>%s</b>\n", bet.betTeam))
+	sb.WriteString(fmt.Sprintf("📌 Коэффициент: <b>%.2f</b> (букмекер) → %.2f (комфорт)\n", bet.betOdds, bet.comfortOdds))
+	if bet.bookmaker != "" {
+		sb.WriteString(fmt.Sprintf("📎 Букмекер: %s\n", bet.bookmaker))
+	}
+
+	sb.WriteString(fmt.Sprintf("\n📊 <b>Вероятности:</b>\n"))
+	sb.WriteString(fmt.Sprintf("  %s: %.1f%%\n", pred.RadiantTeamName, pred.Betting.RadiantWinProb))
+	sb.WriteString(fmt.Sprintf("  %s: %.1f%%\n", pred.DireTeamName, pred.Betting.DireWinProb))
+	if pred.Betting.Confidence != "" {
+		sb.WriteString(fmt.Sprintf("  Уверенность: %s\n", strings.ToUpper(pred.Betting.Confidence)))
+	}
+
+	return sb.String()
 }
 
 func (s *Server) sendError(ctx context.Context, matchID int64, radiant, dire string, err error) {
