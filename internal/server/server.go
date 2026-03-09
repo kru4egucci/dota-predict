@@ -303,10 +303,10 @@ func (s *Server) processMatch(ctx context.Context, game *steam.LiveLeagueGame) {
 		)
 	}
 
-	// If no bet was found, start background odds watcher for 10 minutes.
-	if !bet.hasBet && s.oddsClient != nil {
-		go s.watchOdds(ctx, prediction, radiantName, direName, gameNumber, matchID)
-	}
+	// // If no bet was found, start background odds watcher for 10 minutes.
+	// if !bet.hasBet && s.oddsClient != nil {
+	// 	go s.watchOdds(ctx, prediction, radiantName, direName, gameNumber, matchID)
+	// }
 }
 
 // betResult holds the outcome of a betting decision check.
@@ -318,37 +318,38 @@ type betResult struct {
 	bookmaker   string
 }
 
-// checkBet evaluates whether bookmaker odds meet the comfort threshold for a bet.
+// checkBet always returns a bet on the team with higher win probability.
+// If bookmaker odds are available, they are included in the result.
 func checkBet(pred *models.Prediction, odds *models.MatchOdds) betResult {
-	if odds == nil || pred.Betting.RadiantWinProb <= 0 {
-		return betResult{}
-	}
-
 	betting := &pred.Betting
-	radiantBookOdds := matchOddsForTeam(odds, pred.RadiantTeamName)
-	direBookOdds := matchOddsForTeam(odds, pred.DireTeamName)
-	const maxOdds = 3.9
 
-	if radiantBookOdds > 0 && radiantBookOdds <= maxOdds && betting.RadiantComfortOdds > 0 && radiantBookOdds >= betting.RadiantComfortOdds {
-		return betResult{
-			hasBet:      true,
-			betTeam:     pred.RadiantTeamName,
-			betOdds:     radiantBookOdds,
-			comfortOdds: betting.RadiantComfortOdds,
-			bookmaker:   odds.Bookmaker,
-		}
-	}
-	if direBookOdds > 0 && direBookOdds <= maxOdds && betting.DireComfortOdds > 0 && direBookOdds >= betting.DireComfortOdds {
-		return betResult{
-			hasBet:      true,
-			betTeam:     pred.DireTeamName,
-			betOdds:     direBookOdds,
-			comfortOdds: betting.DireComfortOdds,
-			bookmaker:   odds.Bookmaker,
-		}
+	// Determine the favored team based on model probabilities.
+	var betTeam string
+	var comfortOdds float64
+	if betting.RadiantWinProb >= betting.DireWinProb {
+		betTeam = pred.RadiantTeamName
+		comfortOdds = betting.RadiantComfortOdds
+	} else {
+		betTeam = pred.DireTeamName
+		comfortOdds = betting.DireComfortOdds
 	}
 
-	return betResult{}
+	result := betResult{
+		hasBet:      true,
+		betTeam:     betTeam,
+		comfortOdds: comfortOdds,
+	}
+
+	// Attach bookmaker odds if available.
+	if odds != nil {
+		bookOdds := matchOddsForTeam(odds, betTeam)
+		if bookOdds > 0 {
+			result.betOdds = bookOdds
+			result.bookmaker = odds.Bookmaker
+		}
+	}
+
+	return result
 }
 
 const separator = "━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -359,24 +360,22 @@ func (s *Server) buildMessage(pred *models.Prediction, odds *models.MatchOdds, m
 	betting := &pred.Betting
 
 	// --- Header ---
-	if bet.hasBet {
-		slog.Info("найдена ставка",
-			"match_id", matchID,
-			"bet_team", bet.betTeam,
-			"book_odds", bet.betOdds,
-			"comfort_odds", bet.comfortOdds,
-		)
-		sb.WriteString(fmt.Sprintf("🎯 <b>СТАВКА: %s vs %s</b>\n", pred.RadiantTeamName, pred.DireTeamName))
-		sb.WriteString(fmt.Sprintf("Match ID: %d\n\n", matchID))
-		sb.WriteString(fmt.Sprintf("💰 Ставка на: <b>%s</b>\n", bet.betTeam))
+	slog.Info("ставка",
+		"match_id", matchID,
+		"bet_team", bet.betTeam,
+		"book_odds", bet.betOdds,
+		"comfort_odds", bet.comfortOdds,
+	)
+	sb.WriteString(fmt.Sprintf("🎯 <b>СТАВКА: %s vs %s</b>\n", pred.RadiantTeamName, pred.DireTeamName))
+	sb.WriteString(fmt.Sprintf("Match ID: %d\n\n", matchID))
+	sb.WriteString(fmt.Sprintf("💰 Ставка на: <b>%s</b>\n", bet.betTeam))
+	if bet.betOdds > 0 {
 		sb.WriteString(fmt.Sprintf("📌 Коэффициент: <b>%.2f</b> (букмекер) → %.2f (комфорт)\n", bet.betOdds, bet.comfortOdds))
 		if bet.bookmaker != "" {
 			sb.WriteString(fmt.Sprintf("📎 Букмекер: %s\n", bet.bookmaker))
 		}
-	} else {
-		sb.WriteString(fmt.Sprintf("📊 <b>АНАЛИТИКА: %s vs %s</b>\n", pred.RadiantTeamName, pred.DireTeamName))
-		sb.WriteString(fmt.Sprintf("Match ID: %d\n\n", matchID))
-		sb.WriteString("Ставка не рекомендована (коэффициенты ниже комфортных)\n")
+	} else if bet.comfortOdds > 0 {
+		sb.WriteString(fmt.Sprintf("📌 Комфортный коэффициент: %.2f\n", bet.comfortOdds))
 	}
 
 	// --- Probabilities ---
@@ -385,7 +384,7 @@ func (s *Server) buildMessage(pred *models.Prediction, odds *models.MatchOdds, m
 	sb.WriteString("\n\n")
 
 	if betting.RadiantWinProb > 0 {
-		sb.WriteString("📊 <b>Вероятности:</b>\n")
+		sb.WriteString("📊 <b>Шанс на победу:</b>\n")
 		sb.WriteString(fmt.Sprintf("  %s: %.1f%%\n", pred.RadiantTeamName, betting.RadiantWinProb))
 		sb.WriteString(fmt.Sprintf("  %s: %.1f%%\n", pred.DireTeamName, betting.DireWinProb))
 		if betting.Confidence != "" {
@@ -572,7 +571,7 @@ func (s *Server) buildBetNotification(pred *models.Prediction, odds *models.Matc
 		sb.WriteString(fmt.Sprintf("📎 Букмекер: %s\n", bet.bookmaker))
 	}
 
-	sb.WriteString(fmt.Sprintf("\n📊 <b>Вероятности:</b>\n"))
+	sb.WriteString(fmt.Sprintf("\n📊 <b>Шанс на победу:</b>\n"))
 	sb.WriteString(fmt.Sprintf("  %s: %.1f%%\n", pred.RadiantTeamName, pred.Betting.RadiantWinProb))
 	sb.WriteString(fmt.Sprintf("  %s: %.1f%%\n", pred.DireTeamName, pred.Betting.DireWinProb))
 	if pred.Betting.Confidence != "" {
