@@ -167,7 +167,8 @@ func isDraftComplete(g *steam.LiveLeagueGame) bool {
 	return true
 }
 
-// processMatch runs analysis and odds fetching in parallel, then sends Telegram notification.
+// processMatch runs analysis, sends analytics to Telegram, then watches odds
+// for 10 minutes and sends a bet notification with the best odds found.
 func (s *Server) processMatch(ctx context.Context, game *steam.LiveLeagueGame) {
 	matchID := game.MatchID
 	radiantName := game.RadiantTeamName
@@ -183,139 +184,81 @@ func (s *Server) processMatch(ctx context.Context, game *steam.LiveLeagueGame) {
 	log.Info("начало обработки матча")
 	matchStart := time.Now()
 
-	type analysisResult struct {
-		prediction *models.Prediction
-		err        error
-	}
-	type oddsResult struct {
-		odds *models.MatchOdds
-		err  error
-	}
+	// --- Step 1: Run analysis ---
+	start := time.Now()
+	log.Info("сбор данных для анализа")
 
-	analysisCh := make(chan analysisResult, 1)
-	oddsCh := make(chan oddsResult, 1)
-
-	// Run analysis.
-	go func() {
-		start := time.Now()
-		log.Info("сбор данных для анализа")
-
-		data, err := s.coll.CollectMatchData(ctx, matchID)
-		if err != nil {
-			log.Error("ошибка сбора данных", "error", err, "duration", time.Since(start).String())
-			analysisCh <- analysisResult{err: fmt.Errorf("сбор данных: %w", err)}
-			return
-		}
-		log.Info("данные собраны", "duration", time.Since(start).String())
-
-		llmStart := time.Now()
-		log.Info("запуск LLM анализа")
-
-		pred, err := s.ana.Predict(ctx, data)
-		if err != nil {
-			log.Error("ошибка LLM анализа", "error", err, "duration", time.Since(llmStart).String())
-			analysisCh <- analysisResult{err: fmt.Errorf("анализ: %w", err)}
-			return
-		}
-		log.Info("LLM анализ завершён",
-			"duration", time.Since(llmStart).String(),
-			"radiant_prob", pred.Betting.RadiantWinProb,
-			"dire_prob", pred.Betting.DireWinProb,
-			"confidence", pred.Betting.Confidence,
-		)
-		analysisCh <- analysisResult{prediction: pred}
-	}()
-
-	// Fetch odds in parallel.
-	go func() {
-		if s.oddsClient == nil {
-			log.Debug("OddsPapi не настроен, пропускаю получение коэффициентов")
-			oddsCh <- oddsResult{err: fmt.Errorf("OddsPapi не настроен")}
-			return
-		}
-		start := time.Now()
-		log.Info("запрос коэффициентов у букмекеров")
-
-		const oddsMaxRetries = 3
-		const oddsRetryDelay = 10 * time.Second
-		var odds *models.MatchOdds
-		var err error
-
-		for attempt := 1; attempt <= oddsMaxRetries; attempt++ {
-			odds, err = s.oddsClient.FindMatchOdds(ctx, radiantName, direName, gameNumber)
-			if err == nil {
-				break
-			}
-			log.Warn("не удалось получить коэффициенты, повтор",
-				"error", err,
-				"attempt", attempt,
-				"max_attempts", oddsMaxRetries,
-				"duration", time.Since(start).String(),
-			)
-			if attempt < oddsMaxRetries {
-				select {
-				case <-ctx.Done():
-					oddsCh <- oddsResult{err: ctx.Err()}
-					return
-				case <-time.After(oddsRetryDelay):
-				}
-			}
-		}
-
-		if err != nil {
-			log.Warn("не удалось получить коэффициенты после всех попыток",
-				"error", err,
-				"attempts", oddsMaxRetries,
-				"duration", time.Since(start).String(),
-			)
-			oddsCh <- oddsResult{err: err}
-			return
-		}
-		log.Info("коэффициенты получены",
-			"bookmaker", odds.Bookmaker,
-			"team1", odds.Team1Name, "odds1", odds.Team1Odds,
-			"team2", odds.Team2Name, "odds2", odds.Team2Odds,
-			"duration", time.Since(start).String(),
-		)
-		oddsCh <- oddsResult{odds: odds}
-	}()
-
-	aRes := <-analysisCh
-	oRes := <-oddsCh
-
-	if aRes.err != nil {
-		log.Error("анализ матча провалился", "error", aRes.err,
-			"total_duration", time.Since(matchStart).String())
-		s.sendError(ctx, matchID, radiantName, direName, aRes.err)
+	data, err := s.coll.CollectMatchData(ctx, matchID)
+	if err != nil {
+		log.Error("ошибка сбора данных", "error", err, "duration", time.Since(start).String())
+		s.sendError(ctx, matchID, radiantName, direName, fmt.Errorf("сбор данных: %w", err))
 		return
 	}
+	log.Info("данные собраны", "duration", time.Since(start).String())
 
-	prediction := aRes.prediction
+	llmStart := time.Now()
+	log.Info("запуск LLM анализа")
 
-	if oRes.err != nil {
-		log.Warn("матч обработан без коэффициентов", "odds_error", oRes.err)
+	prediction, err := s.ana.Predict(ctx, data)
+	if err != nil {
+		log.Error("ошибка LLM анализа", "error", err, "duration", time.Since(llmStart).String())
+		s.sendError(ctx, matchID, radiantName, direName, fmt.Errorf("анализ: %w", err))
+		return
+	}
+	log.Info("LLM анализ завершён",
+		"duration", time.Since(llmStart).String(),
+		"radiant_prob", prediction.Betting.RadiantWinProb,
+		"dire_prob", prediction.Betting.DireWinProb,
+		"confidence", prediction.Betting.Confidence,
+	)
+
+	// Determine predicted winner.
+	betTeam := prediction.RadiantTeamName
+	if prediction.Betting.DireWinProb > prediction.Betting.RadiantWinProb {
+		betTeam = prediction.DireTeamName
 	}
 
-	bet := checkBet(prediction, oRes.odds)
-	msg := s.buildMessage(prediction, oRes.odds, matchID, bet)
-
-	log.Debug("отправка уведомления в Telegram", "message_length", len(msg))
-	if err := s.tgClient.SendMessage(ctx, msg); err != nil {
-		log.Error("ошибка отправки в Telegram", "error", err,
-			"total_duration", time.Since(matchStart).String())
+	// --- Step 2: Send АНАЛИТИКА message ---
+	analyticsMsg := s.buildAnalyticsMessage(prediction, matchID, betTeam)
+	if err := s.tgClient.SendMessage(ctx, analyticsMsg); err != nil {
+		log.Error("ошибка отправки аналитики в Telegram", "error", err)
 	} else {
-		log.Info("обработка матча завершена, уведомление отправлено",
+		log.Info("аналитика отправлена в Telegram",
 			"total_duration", time.Since(matchStart).String(),
-			"has_bet", bet.hasBet,
+			"bet_team", betTeam,
 		)
 	}
 
-	// Record bet to Google Sheets.
-	if s.gsheetsClient != nil && bet.hasBet {
-		odds := bet.betOdds
-		if odds == 0 {
-			odds = bet.comfortOdds
-		}
+	// --- Step 3: Watch odds for 10 minutes, then send bet ---
+	bestOdds := s.collectBestOdds(ctx, radiantName, direName, gameNumber, betTeam, matchID)
+
+	bet := betResult{
+		hasBet:  true,
+		betTeam: betTeam,
+	}
+	if bestOdds != nil {
+		bet.betOdds = matchOddsForTeam(bestOdds, betTeam)
+		bet.bookmaker = bestOdds.Bookmaker
+	}
+
+	log.Info("ставка",
+		"match_id", matchID,
+		"bet_team", bet.betTeam,
+		"book_odds", bet.betOdds,
+		"bookmaker", bet.bookmaker,
+	)
+
+	betMsg := s.buildBetMessage(prediction, matchID, bet)
+	if err := s.tgClient.SendMessage(ctx, betMsg); err != nil {
+		log.Error("ошибка отправки ставки в Telegram", "error", err)
+	} else {
+		log.Info("ставка отправлена в Telegram",
+			"total_duration", time.Since(matchStart).String(),
+		)
+	}
+
+	// --- Step 4: Record bet to Google Sheets ---
+	if s.gsheetsClient != nil {
 		winProb := prediction.Betting.RadiantWinProb
 		if prediction.Betting.DireWinProb > winProb {
 			winProb = prediction.Betting.DireWinProb
@@ -327,7 +270,7 @@ func (s *Server) processMatch(ctx context.Context, game *steam.LiveLeagueGame) {
 			Team2:   direName,
 			BetOn:   bet.betTeam,
 			Amount:  int(winProb) * 20,
-			Odds:    odds,
+			Odds:    bet.betOdds,
 			MatchID: matchID,
 			WinProb: winProb,
 		}
@@ -335,84 +278,109 @@ func (s *Server) processMatch(ctx context.Context, game *steam.LiveLeagueGame) {
 			log.Error("ошибка записи ставки в Google Sheets", "error", err)
 		} else {
 			log.Info("ставка записана в Google Sheets",
-				"team", bet.betTeam, "odds", odds, "match_id", matchID)
+				"team", bet.betTeam, "odds", bet.betOdds, "match_id", matchID)
+		}
+	}
+}
+
+// collectBestOdds polls oddspapi every minute for 10 minutes and returns the
+// odds snapshot with the best (highest) odds for betTeam. If no odds are found
+// during the watch period, falls back to the earliest odds of a previous map.
+func (s *Server) collectBestOdds(ctx context.Context, radiantName, direName string, gameNumber int, betTeam string, matchID int64) *models.MatchOdds {
+	log := slog.With("match_id", matchID, "bet_team", betTeam)
+
+	if s.oddsClient == nil {
+		log.Debug("OddsPapi не настроен, пропускаю сбор коэффициентов")
+		return nil
+	}
+
+	log.Info("запуск сбора коэффициентов",
+		"watch_duration", oddsWatchDuration.String(),
+		"poll_interval", oddsWatchInterval.String(),
+	)
+
+	var bestOdds *models.MatchOdds
+	var bestPrice float64
+
+	// Poll immediately, then every minute for 10 minutes.
+	deadline := time.NewTimer(oddsWatchDuration)
+	defer deadline.Stop()
+
+	ticker := time.NewTicker(oddsWatchInterval)
+	defer ticker.Stop()
+
+	// Helper to check and update best odds.
+	tryUpdate := func() {
+		odds, err := s.oddsClient.FindMatchOddsFresh(ctx, radiantName, direName, gameNumber)
+		if err != nil {
+			log.Debug("коэффициенты недоступны", "error", err)
+			return
+		}
+		price := matchOddsForTeam(odds, betTeam)
+		if price > bestPrice {
+			bestPrice = price
+			bestOdds = odds
+			log.Info("найден лучший коэффициент",
+				"price", price,
+				"bookmaker", odds.Bookmaker,
+			)
 		}
 	}
 
-	// // If no bet was found, start background odds watcher for 10 minutes.
-	// if !bet.hasBet && s.oddsClient != nil {
-	// 	go s.watchOdds(ctx, prediction, radiantName, direName, gameNumber, matchID)
-	// }
+	// First poll immediately.
+	tryUpdate()
+
+	for {
+		select {
+		case <-ctx.Done():
+			log.Info("сбор коэффициентов отменён", "reason", ctx.Err())
+			return bestOdds
+		case <-deadline.C:
+			log.Info("сбор коэффициентов завершён",
+				"best_price", bestPrice,
+			)
+			// If nothing found, try fallback to previous map.
+			if bestOdds == nil && gameNumber > 1 {
+				log.Info("пробуем фоллбэк на предыдущую карту")
+				for fallback := gameNumber - 1; fallback >= 1; fallback-- {
+					odds, err := s.oddsClient.FindMatchOdds(ctx, radiantName, direName, fallback)
+					if err == nil {
+						log.Info("фоллбэк: коэффициенты предыдущей карты",
+							"fallback_map", fallback,
+							"bookmaker", odds.Bookmaker,
+						)
+						return odds
+					}
+				}
+				log.Warn("фоллбэк не удался — коэффициенты не найдены")
+			}
+			return bestOdds
+		case <-ticker.C:
+			tryUpdate()
+		}
+	}
 }
 
-// betResult holds the outcome of a betting decision check.
+// betResult holds the outcome of a betting decision.
 type betResult struct {
-	hasBet      bool
-	betTeam     string
-	betOdds     float64
-	comfortOdds float64
-	bookmaker   string
-}
-
-// checkBet always returns a bet on the team with higher win probability.
-// If bookmaker odds are available, they are included in the result.
-func checkBet(pred *models.Prediction, odds *models.MatchOdds) betResult {
-	betting := &pred.Betting
-
-	// Determine the favored team based on model probabilities.
-	var betTeam string
-	var comfortOdds float64
-	if betting.RadiantWinProb >= betting.DireWinProb {
-		betTeam = pred.RadiantTeamName
-		comfortOdds = betting.RadiantComfortOdds
-	} else {
-		betTeam = pred.DireTeamName
-		comfortOdds = betting.DireComfortOdds
-	}
-
-	result := betResult{
-		hasBet:      true,
-		betTeam:     betTeam,
-		comfortOdds: comfortOdds,
-	}
-
-	// Attach bookmaker odds if available.
-	if odds != nil {
-		bookOdds := matchOddsForTeam(odds, betTeam)
-		if bookOdds > 0 {
-			result.betOdds = bookOdds
-			result.bookmaker = odds.Bookmaker
-		}
-	}
-
-	return result
+	hasBet    bool
+	betTeam   string
+	betOdds   float64
+	bookmaker string
 }
 
 const separator = "━━━━━━━━━━━━━━━━━━━━━━━━━"
 
-// buildMessage creates the Telegram message based on analysis and odds.
-func (s *Server) buildMessage(pred *models.Prediction, odds *models.MatchOdds, matchID int64, bet betResult) string {
+// buildAnalyticsMessage creates the full АНАЛИТИКА Telegram message with
+// prediction details, factors, and analysis. Includes predicted winner but no bet.
+func (s *Server) buildAnalyticsMessage(pred *models.Prediction, matchID int64, betTeam string) string {
 	var sb strings.Builder
 	betting := &pred.Betting
 
 	// --- Header ---
-	slog.Info("ставка",
-		"match_id", matchID,
-		"bet_team", bet.betTeam,
-		"book_odds", bet.betOdds,
-		"comfort_odds", bet.comfortOdds,
-	)
-	sb.WriteString(fmt.Sprintf("🎯 <b>СТАВКА: %s vs %s</b>\n", pred.RadiantTeamName, pred.DireTeamName))
+	sb.WriteString(fmt.Sprintf("📊 <b>АНАЛИТИКА: %s vs %s</b>\n", pred.RadiantTeamName, pred.DireTeamName))
 	sb.WriteString(fmt.Sprintf("Match ID: %d\n\n", matchID))
-	sb.WriteString(fmt.Sprintf("💰 Ставка на: <b>%s</b>\n", bet.betTeam))
-	if bet.betOdds > 0 {
-		sb.WriteString(fmt.Sprintf("📌 Коэффициент: <b>%.2f</b> (букмекер) → %.2f (комфорт)\n", bet.betOdds, bet.comfortOdds))
-		if bet.bookmaker != "" {
-			sb.WriteString(fmt.Sprintf("📎 Букмекер: %s\n", bet.bookmaker))
-		}
-	} else if bet.comfortOdds > 0 {
-		sb.WriteString(fmt.Sprintf("📌 Комфортный коэффициент: %.2f\n", bet.comfortOdds))
-	}
+	sb.WriteString(fmt.Sprintf("🏆 Победитель: <b>%s</b>\n", betTeam))
 
 	// --- Probabilities ---
 	sb.WriteString("\n")
@@ -451,36 +419,36 @@ func (s *Server) buildMessage(pred *models.Prediction, odds *models.MatchOdds, m
 		}
 	}
 
-	// --- Odds ---
-	sb.WriteString("\n")
-	sb.WriteString(separator)
-	sb.WriteString("\n\n")
-	sb.WriteString("💲 <b>Коэффициенты:</b>\n")
-	if odds != nil {
-		sb.WriteString(fmt.Sprintf("  %s: %.2f (%s)\n", odds.Team1Name, odds.Team1Odds, odds.Bookmaker))
-		sb.WriteString(fmt.Sprintf("  %s: %.2f (%s)\n", odds.Team2Name, odds.Team2Odds, odds.Bookmaker))
-	} else {
-		sb.WriteString("  Не удалось получить коэффициенты\n")
-	}
-
-	if betting.RadiantMinOdds > 0 || betting.DireMinOdds > 0 {
-		sb.WriteString("\n  <b>Расчётные:</b>\n")
-		if betting.RadiantMinOdds > 0 {
-			sb.WriteString(fmt.Sprintf("  %s: мин %.2f / комфорт %.2f\n",
-				pred.RadiantTeamName, betting.RadiantMinOdds, betting.RadiantComfortOdds))
-		}
-		if betting.DireMinOdds > 0 {
-			sb.WriteString(fmt.Sprintf("  %s: мин %.2f / комфорт %.2f\n",
-				pred.DireTeamName, betting.DireMinOdds, betting.DireComfortOdds))
-		}
-	}
-
 	// --- Analysis ---
 	sb.WriteString("\n")
 	sb.WriteString(separator)
 	sb.WriteString("\n\n")
 	sb.WriteString("📝 <b>Анализ:</b>\n")
 	sb.WriteString(telegram.MDToTelegramHTML(pred.Analysis))
+
+	return sb.String()
+}
+
+// buildBetMessage creates a compact СТАВКА Telegram message with the team and odds.
+func (s *Server) buildBetMessage(pred *models.Prediction, matchID int64, bet betResult) string {
+	var sb strings.Builder
+
+	sb.WriteString(fmt.Sprintf("🎯 <b>СТАВКА: %s vs %s</b>\n", pred.RadiantTeamName, pred.DireTeamName))
+	sb.WriteString(fmt.Sprintf("Match ID: %d\n\n", matchID))
+	sb.WriteString(fmt.Sprintf("💰 Ставка на: <b>%s</b>\n", bet.betTeam))
+	if bet.betOdds > 0 {
+		sb.WriteString(fmt.Sprintf("📌 Коэффициент: <b>%.2f</b>\n", bet.betOdds))
+		if bet.bookmaker != "" {
+			sb.WriteString(fmt.Sprintf("📎 Букмекер: %s\n", bet.bookmaker))
+		}
+	}
+
+	sb.WriteString(fmt.Sprintf("\n📊 <b>Шанс на победу:</b>\n"))
+	sb.WriteString(fmt.Sprintf("  %s: %.1f%%\n", pred.RadiantTeamName, pred.Betting.RadiantWinProb))
+	sb.WriteString(fmt.Sprintf("  %s: %.1f%%\n", pred.DireTeamName, pred.Betting.DireWinProb))
+	if pred.Betting.Confidence != "" {
+		sb.WriteString(fmt.Sprintf("  Уверенность: %s\n", strings.ToUpper(pred.Betting.Confidence)))
+	}
 
 	return sb.String()
 }
@@ -538,84 +506,6 @@ const (
 	oddsWatchInterval = 1 * time.Minute
 )
 
-// watchOdds polls for bookmaker odds every minute for up to 10 minutes after a match
-// prediction was sent without a bet. If suitable odds appear, sends a bet notification.
-// The prediction is read-only (immutable after creation), so no mutex is needed for it.
-func (s *Server) watchOdds(ctx context.Context, pred *models.Prediction, radiantName, direName string, gameNumber int, matchID int64) {
-	log := slog.With("match_id", matchID, "radiant", radiantName, "dire", direName)
-	log.Info("запуск отслеживания коэффициентов",
-		"watch_duration", oddsWatchDuration.String(),
-		"poll_interval", oddsWatchInterval.String(),
-	)
-
-	deadline := time.NewTimer(oddsWatchDuration)
-	defer deadline.Stop()
-
-	ticker := time.NewTicker(oddsWatchInterval)
-	defer ticker.Stop()
-
-	for {
-		select {
-		case <-ctx.Done():
-			log.Info("отслеживание коэффициентов отменено", "reason", ctx.Err())
-			return
-		case <-deadline.C:
-			log.Info("отслеживание коэффициентов завершено — время вышло")
-			return
-		case <-ticker.C:
-			odds, err := s.oddsClient.FindMatchOddsFresh(ctx, radiantName, direName, gameNumber)
-			if err != nil {
-				log.Debug("коэффициенты ещё недоступны", "error", err)
-				continue
-			}
-
-			bet := checkBet(pred, odds)
-			if !bet.hasBet {
-				log.Debug("коэффициенты получены, но ставка не рекомендована",
-					"team1", odds.Team1Name, "odds1", odds.Team1Odds,
-					"team2", odds.Team2Name, "odds2", odds.Team2Odds,
-				)
-				continue
-			}
-
-			log.Info("найдена ставка при отслеживании коэффициентов",
-				"team", bet.betTeam,
-				"book_odds", bet.betOdds,
-				"comfort_odds", bet.comfortOdds,
-				"bookmaker", bet.bookmaker,
-			)
-
-			msg := s.buildBetNotification(pred, odds, matchID, bet)
-			if err := s.tgClient.SendMessage(ctx, msg); err != nil {
-				log.Error("ошибка отправки ставки в Telegram", "error", err)
-			} else {
-				log.Info("уведомление о ставке отправлено")
-			}
-			return
-		}
-	}
-}
-
-// buildBetNotification creates a compact Telegram message for a delayed bet signal.
-func (s *Server) buildBetNotification(pred *models.Prediction, odds *models.MatchOdds, matchID int64, bet betResult) string {
-	var sb strings.Builder
-	sb.WriteString(fmt.Sprintf("🎯 <b>СТАВКА (отложенная): %s vs %s</b>\n", pred.RadiantTeamName, pred.DireTeamName))
-	sb.WriteString(fmt.Sprintf("Match ID: %d\n\n", matchID))
-	sb.WriteString(fmt.Sprintf("💰 Ставка на: <b>%s</b>\n", bet.betTeam))
-	sb.WriteString(fmt.Sprintf("📌 Коэффициент: <b>%.2f</b> (букмекер) → %.2f (комфорт)\n", bet.betOdds, bet.comfortOdds))
-	if bet.bookmaker != "" {
-		sb.WriteString(fmt.Sprintf("📎 Букмекер: %s\n", bet.bookmaker))
-	}
-
-	sb.WriteString(fmt.Sprintf("\n📊 <b>Шанс на победу:</b>\n"))
-	sb.WriteString(fmt.Sprintf("  %s: %.1f%%\n", pred.RadiantTeamName, pred.Betting.RadiantWinProb))
-	sb.WriteString(fmt.Sprintf("  %s: %.1f%%\n", pred.DireTeamName, pred.Betting.DireWinProb))
-	if pred.Betting.Confidence != "" {
-		sb.WriteString(fmt.Sprintf("  Уверенность: %s\n", strings.ToUpper(pred.Betting.Confidence)))
-	}
-
-	return sb.String()
-}
 
 func (s *Server) sendError(ctx context.Context, matchID int64, radiant, dire string, err error) {
 	msg := fmt.Sprintf("<b>ОШИБКА: %s vs %s</b>\nMatch ID: %d\n\n%v", radiant, dire, matchID, err)
