@@ -316,15 +316,20 @@ func (s *Server) processMatch(ctx context.Context, game *steam.LiveLeagueGame) {
 		if odds == 0 {
 			odds = bet.comfortOdds
 		}
+		winProb := prediction.Betting.RadiantWinProb
+		if prediction.Betting.DireWinProb > winProb {
+			winProb = prediction.Betting.DireWinProb
+		}
 		row := &gsheets.BetRow{
 			Date:    time.Now().Format("02.01.2006"),
 			Event:   fmt.Sprintf("map %d", gameNumber),
 			Team1:   radiantName,
 			Team2:   direName,
 			BetOn:   bet.betTeam,
-			Amount:  1000,
+			Amount:  int(winProb) * 20,
 			Odds:    odds,
 			MatchID: matchID,
+			WinProb: winProb,
 		}
 		if err := s.gsheetsClient.AppendBetRow(ctx, row); err != nil {
 			log.Error("ошибка записи ставки в Google Sheets", "error", err)

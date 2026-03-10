@@ -21,8 +21,6 @@ func buildPrompt(data *models.CollectedData) string {
 	writeLaneMatchupSection(&sb, data)
 	writeTeamStatsSection(&sb, data)
 	writeTeamFormSection(&sb, data)
-	writeH2HSection(&sb, data)
-	writeTeamHeroSection(&sb, data)
 	writePlayerHeroSection(&sb, data)
 	writePlayerFormSection(&sb, data)
 	writeAnalysisInstructions(&sb)
@@ -279,87 +277,6 @@ func writeTeamForm(sb *strings.Builder, side string, team *models.Team, matches 
 	}
 }
 
-func writeH2HSection(sb *strings.Builder, data *models.CollectedData) {
-	sb.WriteString("## 9. ИСТОРИЯ ЛИЧНЫХ ВСТРЕЧ\n")
-
-	if len(data.HeadToHead) == 0 {
-		sb.WriteString("  История личных встреч не найдена.\n\n")
-		return
-	}
-
-	radiantName := "Radiant"
-	direName := "Dire"
-	if data.RadiantTeam != nil {
-		radiantName = data.RadiantTeam.Name
-	}
-	if data.DireTeam != nil {
-		direName = data.DireTeam.Name
-	}
-
-	wins := 0
-	for _, m := range data.HeadToHead {
-		if teamWon(m) {
-			wins++
-		}
-	}
-	losses := len(data.HeadToHead) - wins
-
-	sb.WriteString(fmt.Sprintf("  %s vs %s: всего %d матчей (%s %d - %d %s)\n",
-		radiantName, direName, len(data.HeadToHead), radiantName, wins, losses, direName))
-
-	limit := 5
-	if len(data.HeadToHead) < limit {
-		limit = len(data.HeadToHead)
-	}
-	sb.WriteString(fmt.Sprintf("  Последние %d встреч:\n", limit))
-	for _, m := range data.HeadToHead[:limit] {
-		won := teamWon(m)
-		result := "П"
-		if !won {
-			result = "Л"
-		}
-		sb.WriteString(fmt.Sprintf("    [%s для %s] vs %s (матч %d)\n",
-			result, radiantName, m.OpposingTeamName, m.MatchID))
-	}
-
-	sb.WriteString("\n")
-}
-
-func writeTeamHeroSection(sb *strings.Builder, data *models.CollectedData) {
-	sb.WriteString("## 10. ВИНРЕЙТЫ КОМАНД НА КОНКРЕТНЫХ ГЕРОЯХ\n")
-
-	radiantHeroes, direHeroes := heroIDsByTeam(data)
-	writeTeamHeroStats(sb, "Radiant", data.RadiantTeam, data.RadiantTeamHeroes, radiantHeroes, data.HeroNames)
-	writeTeamHeroStats(sb, "Dire", data.DireTeam, data.DireTeamHeroes, direHeroes, data.HeroNames)
-
-	sb.WriteString("\n")
-}
-
-func writeTeamHeroStats(sb *strings.Builder, side string, team *models.Team, teamHeroes []models.TeamHero, pickedIDs []int, heroNames map[int]string) {
-	if team == nil || len(teamHeroes) == 0 {
-		sb.WriteString(fmt.Sprintf("  %s: нет данных\n", side))
-		return
-	}
-
-	sb.WriteString(fmt.Sprintf("  %s — %s:\n", side, team.Name))
-
-	heroMap := make(map[int]*models.TeamHero, len(teamHeroes))
-	for i := range teamHeroes {
-		heroMap[teamHeroes[i].HeroID] = &teamHeroes[i]
-	}
-
-	for _, hID := range pickedIDs {
-		name := heroName(heroNames, hID)
-		th := heroMap[hID]
-		if th == nil || th.GamesPlayed == 0 {
-			sb.WriteString(fmt.Sprintf("    %s: команда не играла этим героем\n", name))
-			continue
-		}
-		wr := safePercent(th.Wins, th.GamesPlayed)
-		sb.WriteString(fmt.Sprintf("    %s: %d игр, %.1f%% винрейт\n", name, th.GamesPlayed, wr))
-	}
-}
-
 func writePlayerHeroSection(sb *strings.Builder, data *models.CollectedData) {
 	sb.WriteString("## 11. КОМФОРТ ИГРОКОВ НА ГЕРОЯХ\n")
 
@@ -485,12 +402,10 @@ func writeAnalysisInstructions(sb *strings.Builder) {
 
 === ВЕСА ФАКТОРОВ ===
 1. Сила и форма команд (20%): Рейтинг, общий W/L, форма в последних 10 матчах. Если одна команда значительно сильнее (разница в рейтинге >200), этот фактор доминирует.
-2. Драфт — матчапы и синергии (25%): Контрпики, комбо героев, масштабирование по стадиям игры. При равных командах это решающий фактор.
+2. Драфт — матчапы и синергии (35%): Контрпики, комбо героев, масштабирование по стадиям игры. При равных командах это решающий фактор.
 3. Лейн-матчапы (15%): Кто выигрывает каждый лайн (мид 1v1, сайд-лайны 2v2). Раннее преимущество конвертируется в победу в ~60% про-матчей.
-4. Мета патча и турнира (10%): Сильны ли выбранные герои в текущем патче и на этом турнире? Мета-герои vs нишевые пики.
+4. Мета патча и турнира (20%): Сильны ли выбранные герои в текущем патче и на этом турнире? Мета-герои vs нишевые пики.
 5. Комфорт игроков на героях (10%): Сигнатурные герои vs непривычные пики. Про-игрок на сигнатуре играет на 5-10% сильнее.
-6. Опыт команды на героях (10%): Как команда перформит на конкретных пиках. Отрепетированные стратегии vs импровизация.
-7. История личных встреч (10%): Психологический фактор, стилистические матчапы. На малой выборке (<5 матчей) вес снижается.
 
 === МЕТОДОЛОГИЯ ===
 Базовая вероятность = 50/50. Каждый фактор сдвигает вероятность пропорционально своему весу.
@@ -500,7 +415,7 @@ func writeAnalysisInstructions(sb *strings.Builder) {
 
 === ФОРМАТ ОТВЕТА (JSON) ===
 Ответь валидным JSON-объектом с полями:
-- "factors": массив из 7 объектов с полями:
+- "factors": массив из 5 объектов с полями:
   - "name": название фактора
   - "weight": вес в процентах (число)
   - "advantage": "Radiant", "Dire" или "Equal"

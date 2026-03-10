@@ -28,9 +28,10 @@ type BetRow struct {
 	Team1   string  // radiant team name
 	Team2   string  // dire team name
 	BetOn   string  // team name the bet is placed on
-	Amount  int     // bet amount (always 1000)
+	Amount  int     // bet amount (20 * confidence)
 	Odds    float64 // bookmaker odds
 	MatchID int64   // for result lookup
+	WinProb float64 // model win probability (0-100)
 }
 
 // PendingRow represents a bet row without a result yet.
@@ -111,13 +112,14 @@ func (c *Client) AppendBetRow(ctx context.Context, row *BetRow) error {
 		return err
 	}
 
-	matchIDRange := fmt.Sprintf("'%s'!J%d", c.sheetName, targetRow)
+	// Write match ID (column J) and win probability (column K).
+	jkRange := fmt.Sprintf("'%s'!J%d:K%d", c.sheetName, targetRow, targetRow)
 	err = retryOnTransient(func() error {
-		_, e := c.service.Update(c.spreadsheetID, matchIDRange, &sheets.ValueRange{
-			Values: [][]interface{}{{row.MatchID}},
+		_, e := c.service.Update(c.spreadsheetID, jkRange, &sheets.ValueRange{
+			Values: [][]interface{}{{row.MatchID, row.WinProb}},
 		}).ValueInputOption("USER_ENTERED").Context(ctx).Do()
 		if e != nil {
-			return fmt.Errorf("запись match ID в Google Sheets: %w", e)
+			return fmt.Errorf("запись match ID и уверенности в Google Sheets: %w", e)
 		}
 		return nil
 	})
