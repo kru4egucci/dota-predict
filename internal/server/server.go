@@ -676,6 +676,13 @@ func (s *Server) checkResults(ctx context.Context) {
 			continue
 		}
 
+		// Duration == 0 means OpenDota hasn't fully parsed the match yet;
+		// radiant_win would default to false and produce wrong results.
+		if match.Duration == 0 {
+			log.Debug("матч ещё не распарсен", "match_id", row.MatchID)
+			continue
+		}
+
 		// Determine the winning team name.
 		// Team1 in the sheet is always the radiant team.
 		var winner string
