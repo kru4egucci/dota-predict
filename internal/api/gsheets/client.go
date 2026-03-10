@@ -73,9 +73,8 @@ func (c *Client) AppendBetRow(ctx context.Context, row *BetRow) error {
 		targetRow = 2 // minimum: right after header
 	}
 
-	profitFormula := `=IF(INDIRECT("H"&ROW())="W",INDIRECT("F"&ROW())*INDIRECT("G"&ROW())-INDIRECT("F"&ROW()),IF(INDIRECT("H"&ROW())="L",-INDIRECT("F"&ROW()),""))`
-
-	values := []interface{}{
+	// Write columns A–H (skip I/Профит to preserve existing formula) and J.
+	mainValues := []interface{}{
 		row.Date,
 		row.Event,
 		row.Team1,
@@ -83,22 +82,23 @@ func (c *Client) AppendBetRow(ctx context.Context, row *BetRow) error {
 		row.BetOn,
 		row.Amount,
 		row.Odds,
-		"",             // Результат — empty initially
-		profitFormula,  // Профит — auto-calculated
-		row.MatchID,    // Column J — match ID for result checking
+		"", // Результат — empty initially
 	}
 
-	rangeStr := fmt.Sprintf("'%s'!A%d:J%d", c.sheetName, targetRow, targetRow)
-	vr := &sheets.ValueRange{
-		Values: [][]interface{}{values},
-	}
-
-	_, err = c.service.Update(c.spreadsheetID, rangeStr, vr).
-		ValueInputOption("USER_ENTERED").
-		Context(ctx).
-		Do()
+	mainRange := fmt.Sprintf("'%s'!A%d:H%d", c.sheetName, targetRow, targetRow)
+	_, err = c.service.Update(c.spreadsheetID, mainRange, &sheets.ValueRange{
+		Values: [][]interface{}{mainValues},
+	}).ValueInputOption("USER_ENTERED").Context(ctx).Do()
 	if err != nil {
 		return fmt.Errorf("запись строки в Google Sheets: %w", err)
+	}
+
+	matchIDRange := fmt.Sprintf("'%s'!J%d", c.sheetName, targetRow)
+	_, err = c.service.Update(c.spreadsheetID, matchIDRange, &sheets.ValueRange{
+		Values: [][]interface{}{{row.MatchID}},
+	}).ValueInputOption("USER_ENTERED").Context(ctx).Do()
+	if err != nil {
+		return fmt.Errorf("запись match ID в Google Sheets: %w", err)
 	}
 
 	return nil
