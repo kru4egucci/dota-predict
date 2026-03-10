@@ -4,10 +4,12 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"log/slog"
 	"net/http"
+	"strings"
 	"time"
 
 	"dota-predict/internal/models"
@@ -35,6 +37,7 @@ func NewClient(apiKey, model string) *Client {
 
 // ChatCompletion sends messages to the LLM and returns the response.
 // If responseFormat is non-nil, the model is instructed to return structured output.
+// Retries up to 3 times on transient errors (5xx, stream/connection errors).
 func (c *Client) ChatCompletion(ctx context.Context, messages []models.ChatMessage, responseFormat *models.ResponseFormat) (*models.ChatResponse, error) {
 	temp := c.temperature
 
@@ -55,6 +58,28 @@ func (c *Client) ChatCompletion(ctx context.Context, messages []models.ChatMessa
 		return nil, fmt.Errorf("marshaling request: %w", err)
 	}
 
+	const maxAttempts = 3
+	for attempt := range maxAttempts {
+		chatResp, err := c.doRequest(ctx, jsonBody)
+		if err == nil {
+			return chatResp, nil
+		}
+		if !isTransient(err) || attempt == maxAttempts-1 {
+			return nil, err
+		}
+		delay := time.Duration(attempt+1) * 5 * time.Second
+		slog.Warn("openrouter: transient error, повтор", "attempt", attempt+1, "delay", delay, "error", err)
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+	return nil, err // unreachable
+}
+
+// doRequest performs a single HTTP request to OpenRouter.
+func (c *Client) doRequest(ctx context.Context, jsonBody []byte) (*models.ChatResponse, error) {
 	slog.Debug("openrouter: отправка запроса", "model", c.model, "request_size", len(jsonBody))
 
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, apiURL, bytes.NewReader(jsonBody))
@@ -80,7 +105,7 @@ func (c *Client) ChatCompletion(ctx context.Context, messages []models.ChatMessa
 	if resp.StatusCode != http.StatusOK {
 		respBody, _ := io.ReadAll(resp.Body)
 		slog.Error("openrouter: HTTP ошибка", "status", resp.StatusCode, "body", string(respBody))
-		return nil, fmt.Errorf("OpenRouter API returned status %d: %s", resp.StatusCode, string(respBody))
+		return nil, &apiError{statusCode: resp.StatusCode, body: string(respBody)}
 	}
 
 	var chatResp models.ChatResponse
@@ -92,4 +117,27 @@ func (c *Client) ChatCompletion(ctx context.Context, messages []models.ChatMessa
 	slog.Debug("openrouter: ответ получен", "duration", elapsed.String(), "tokens", chatResp.Usage.TotalTokens)
 
 	return &chatResp, nil
+}
+
+// apiError represents an HTTP error from OpenRouter.
+type apiError struct {
+	statusCode int
+	body       string
+}
+
+func (e *apiError) Error() string {
+	return fmt.Sprintf("OpenRouter API returned status %d: %s", e.statusCode, e.body)
+}
+
+// isTransient returns true for errors that are worth retrying:
+// 5xx HTTP errors, stream errors, and connection-level errors.
+func isTransient(err error) bool {
+	var ae *apiError
+	if errors.As(err, &ae) {
+		return ae.statusCode >= http.StatusInternalServerError
+	}
+	// Stream/connection errors (like "INTERNAL_ERROR; received from peer") are transient.
+	return strings.Contains(err.Error(), "INTERNAL_ERROR") ||
+		strings.Contains(err.Error(), "stream error") ||
+		strings.Contains(err.Error(), "connection reset")
 }

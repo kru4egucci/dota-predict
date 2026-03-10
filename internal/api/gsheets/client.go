@@ -2,10 +2,14 @@ package gsheets
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
+	"net/http"
 	"strconv"
+	"time"
 
+	"google.golang.org/api/googleapi"
 	"google.golang.org/api/option"
 	"google.golang.org/api/sheets/v4"
 )
@@ -62,9 +66,17 @@ func NewClient(credentialsFile, spreadsheetID, sheetName string) (*Client, error
 func (c *Client) AppendBetRow(ctx context.Context, row *BetRow) error {
 	// Find the first empty row by reading column A.
 	colA := fmt.Sprintf("'%s'!A:A", c.sheetName)
-	resp, err := c.service.Get(c.spreadsheetID, colA).Context(ctx).Do()
+	var resp *sheets.ValueRange
+	err := retryOnTransient(func() error {
+		var e error
+		resp, e = c.service.Get(c.spreadsheetID, colA).Context(ctx).Do()
+		if e != nil {
+			return fmt.Errorf("чтение колонки A из Google Sheets: %w", e)
+		}
+		return nil
+	})
 	if err != nil {
-		return fmt.Errorf("чтение колонки A из Google Sheets: %w", err)
+		return err
 	}
 
 	// Next row = number of non-empty rows in column A + 1 (1-based).
@@ -86,19 +98,31 @@ func (c *Client) AppendBetRow(ctx context.Context, row *BetRow) error {
 	}
 
 	mainRange := fmt.Sprintf("'%s'!A%d:H%d", c.sheetName, targetRow, targetRow)
-	_, err = c.service.Update(c.spreadsheetID, mainRange, &sheets.ValueRange{
-		Values: [][]interface{}{mainValues},
-	}).ValueInputOption("USER_ENTERED").Context(ctx).Do()
+	err = retryOnTransient(func() error {
+		_, e := c.service.Update(c.spreadsheetID, mainRange, &sheets.ValueRange{
+			Values: [][]interface{}{mainValues},
+		}).ValueInputOption("USER_ENTERED").Context(ctx).Do()
+		if e != nil {
+			return fmt.Errorf("запись строки в Google Sheets: %w", e)
+		}
+		return nil
+	})
 	if err != nil {
-		return fmt.Errorf("запись строки в Google Sheets: %w", err)
+		return err
 	}
 
 	matchIDRange := fmt.Sprintf("'%s'!J%d", c.sheetName, targetRow)
-	_, err = c.service.Update(c.spreadsheetID, matchIDRange, &sheets.ValueRange{
-		Values: [][]interface{}{{row.MatchID}},
-	}).ValueInputOption("USER_ENTERED").Context(ctx).Do()
+	err = retryOnTransient(func() error {
+		_, e := c.service.Update(c.spreadsheetID, matchIDRange, &sheets.ValueRange{
+			Values: [][]interface{}{{row.MatchID}},
+		}).ValueInputOption("USER_ENTERED").Context(ctx).Do()
+		if e != nil {
+			return fmt.Errorf("запись match ID в Google Sheets: %w", e)
+		}
+		return nil
+	})
 	if err != nil {
-		return fmt.Errorf("запись match ID в Google Sheets: %w", err)
+		return err
 	}
 
 	return nil
@@ -107,9 +131,17 @@ func (c *Client) AppendBetRow(ctx context.Context, row *BetRow) error {
 // GetPendingRows returns all rows that have a match ID but no result yet.
 func (c *Client) GetPendingRows(ctx context.Context) ([]PendingRow, error) {
 	rangeStr := fmt.Sprintf("'%s'!A:J", c.sheetName)
-	resp, err := c.service.Get(c.spreadsheetID, rangeStr).Context(ctx).Do()
+	var resp *sheets.ValueRange
+	err := retryOnTransient(func() error {
+		var e error
+		resp, e = c.service.Get(c.spreadsheetID, rangeStr).Context(ctx).Do()
+		if e != nil {
+			return fmt.Errorf("чтение Google Sheets: %w", e)
+		}
+		return nil
+	})
 	if err != nil {
-		return nil, fmt.Errorf("чтение Google Sheets: %w", err)
+		return nil, err
 	}
 
 	var pending []PendingRow
@@ -150,15 +182,37 @@ func (c *Client) WriteResult(ctx context.Context, rowNumber int, result string) 
 		Values: [][]interface{}{{result}},
 	}
 
-	_, err := c.service.Update(c.spreadsheetID, cell, vr).
-		ValueInputOption("RAW").
-		Context(ctx).
-		Do()
-	if err != nil {
-		return fmt.Errorf("запись результата в строку %d: %w", rowNumber, err)
-	}
+	return retryOnTransient(func() error {
+		_, e := c.service.Update(c.spreadsheetID, cell, vr).
+			ValueInputOption("RAW").
+			Context(ctx).
+			Do()
+		if e != nil {
+			return fmt.Errorf("запись результата в строку %d: %w", rowNumber, e)
+		}
+		return nil
+	})
+}
 
-	return nil
+// retryOnTransient retries fn up to 3 times on 5xx Google API errors.
+func retryOnTransient(fn func() error) error {
+	const maxAttempts = 3
+	for i := range maxAttempts {
+		err := fn()
+		if err == nil {
+			return nil
+		}
+		var apiErr *googleapi.Error
+		if ok := errors.As(err, &apiErr); !ok || apiErr.Code < http.StatusInternalServerError {
+			return err
+		}
+		if i < maxAttempts-1 {
+			delay := time.Duration(i+1) * 2 * time.Second
+			slog.Warn("Google Sheets 5xx, повтор", "attempt", i+1, "delay", delay, "error", err)
+			time.Sleep(delay)
+		}
+	}
+	return fmt.Errorf("все %d попыток не удались", maxAttempts)
 }
 
 // cellString safely extracts a string from a row at the given 0-based index.
