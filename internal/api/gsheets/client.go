@@ -76,9 +76,9 @@ func (c *Client) AppendBetRow(ctx context.Context, row *BetRow) error {
 	// Write columns A–H (skip I/Профит to preserve existing formula) and J.
 	mainValues := []interface{}{
 		row.Date,
-		row.Event,
 		row.Team1,
 		row.Team2,
+		row.Event,
 		row.BetOn,
 		row.Amount,
 		row.Odds,
@@ -135,8 +135,8 @@ func (c *Client) GetPendingRows(ctx context.Context) ([]PendingRow, error) {
 			RowNumber: i + 1, // 1-based
 			MatchID:   matchID,
 			BetTeam:   cellString(row, 4), // column E (Ставка на)
-			Team1:     cellString(row, 2), // column C (Команда 1)
-			Team2:     cellString(row, 3), // column D (Команда 2)
+			Team1:     cellString(row, 1), // column B (Команда 1)
+			Team2:     cellString(row, 2), // column C (Команда 2)
 		})
 	}
 
