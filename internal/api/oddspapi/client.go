@@ -17,6 +17,8 @@ import (
 const (
 	baseURL     = "https://api.oddspapi.io/v4"
 	dotaSportID = 16
+	// Preferred bookmaker for odds queries (Pinnacle has best Dota 2 coverage).
+	defaultBookmakers = "pinnacle"
 	// Market IDs for moneyline by map.
 	marketSeries = "161" // series winner
 	marketMap1   = "1647"
@@ -146,7 +148,7 @@ func (c *Client) tryLiveOdds(ctx context.Context, fixture *models.OddsFixture, g
 
 // tryHistoricalOdds fetches latest odds from /v4/historical-odds (uses newest entry as current price).
 func (c *Client) tryHistoricalOdds(ctx context.Context, fixture *models.OddsFixture, gameNumber int) (*models.MatchOdds, error) {
-	url := fmt.Sprintf("%s/historical-odds?fixtureId=%s&apiKey=%s", baseURL, fixture.FixtureID, c.apiKey)
+	url := fmt.Sprintf("%s/historical-odds?fixtureId=%s&bookmakers=%s&apiKey=%s", baseURL, fixture.FixtureID, defaultBookmakers, c.apiKey)
 
 	var resp models.HistoricalOddsResponse
 	if err := c.get(ctx, url, &resp); err != nil {
@@ -212,7 +214,7 @@ func (c *Client) convertHistoricalToOdds(hist *models.HistoricalOddsResponse) *m
 // when the target map's odds are unavailable.
 // For map 2: tries map 1. For map 3: tries map 2, then map 1.
 func (c *Client) tryFallbackOdds(ctx context.Context, fixture *models.OddsFixture, gameNumber int) (*models.MatchOdds, error) {
-	url := fmt.Sprintf("%s/historical-odds?fixtureId=%s&apiKey=%s", baseURL, fixture.FixtureID, c.apiKey)
+	url := fmt.Sprintf("%s/historical-odds?fixtureId=%s&bookmakers=%s&apiKey=%s", baseURL, fixture.FixtureID, defaultBookmakers, c.apiKey)
 
 	var hist models.HistoricalOddsResponse
 	if err := c.get(ctx, url, &hist); err != nil {
@@ -593,7 +595,7 @@ func (c *Client) refreshAllOdds(ctx context.Context) {
 
 // fetchOddsResponse fetches the raw odds response for a fixture.
 func (c *Client) fetchOddsResponse(ctx context.Context, fixtureID string) (*models.OddsResponse, error) {
-	url := fmt.Sprintf("%s/odds?fixtureId=%s&apiKey=%s", baseURL, fixtureID, c.apiKey)
+	url := fmt.Sprintf("%s/odds?fixtureId=%s&bookmakers=%s&apiKey=%s", baseURL, fixtureID, defaultBookmakers, c.apiKey)
 
 	var resp models.OddsResponse
 	if err := c.get(ctx, url, &resp); err != nil {
