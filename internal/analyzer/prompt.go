@@ -18,10 +18,8 @@ func buildPrompt(data *models.CollectedData) string {
 	writeHeroStatsSection(&sb, data)
 	writeLeagueMetaSection(&sb, data)
 	writeMatchupSection(&sb, data)
-	writeLaneMatchupSection(&sb, data)
 	writeTeamStatsSection(&sb, data)
 	writeTeamFormSection(&sb, data)
-	writePlayerHeroSection(&sb, data)
 	writePlayerFormSection(&sb, data)
 	writeAnalysisInstructions(&sb)
 
@@ -277,34 +275,6 @@ func writeTeamForm(sb *strings.Builder, side string, team *models.Team, matches 
 	}
 }
 
-func writePlayerHeroSection(sb *strings.Builder, data *models.CollectedData) {
-	sb.WriteString("## 11. КОМФОРТ ИГРОКОВ НА ГЕРОЯХ\n")
-
-	for _, p := range data.Match.Players {
-		if p.AccountID == 0 {
-			continue
-		}
-
-		hName := heroName(data.HeroNames, p.HeroID)
-		pName := playerDisplayName(p)
-		side := "Radiant"
-		if !p.IsRadiant {
-			side = "Dire"
-		}
-
-		stat := data.PlayerHeroStats[p.AccountID]
-		if stat == nil || stat.Games == 0 {
-			sb.WriteString(fmt.Sprintf("  [%s] %s на %s: нет данных\n", side, pName, hName))
-			continue
-		}
-
-		wr := safePercent(stat.Win, stat.Games)
-		sb.WriteString(fmt.Sprintf("  [%s] %s на %s: %d игр, %.1f%% винрейт\n",
-			side, pName, hName, stat.Games, wr))
-	}
-
-	sb.WriteString("\n")
-}
 
 func writePlayerFormSection(sb *strings.Builder, data *models.CollectedData) {
 	sb.WriteString("## 12. ФОРМА ИГРОКОВ (Последние 20 матчей)\n")
@@ -366,7 +336,6 @@ func buildDraftPrompt(data *models.CollectedData) string {
 	writeHeroStatsSection(&sb, data)
 	writeLeagueMetaSection(&sb, data)
 	writeMatchupSection(&sb, data)
-	writeLaneMatchupSection(&sb, data)
 	writeDraftAnalysisInstructions(&sb)
 
 	return sb.String()
@@ -379,8 +348,7 @@ func writeDraftAnalysisInstructions(sb *strings.Builder) {
 1. Матчапы героев: Кто кого контрит? У какой стороны лучше индивидуальные матчапы?
 2. Синергии внутри команды: Какие комбо героев есть у каждой стороны? Насколько хорошо герои дополняют друг друга?
 3. Мета патча и турнира: Насколько сильны выбранные герои в текущем патче и на данном турнире?
-4. Лейн-матчапы: У кого преимущество на миде? Какая сторона доминирует на сайд-лайнах?
-5. Масштабирование: Какой драфт сильнее на разных стадиях игры (ранняя/средняя/поздняя)?
+4. Масштабирование: Какой драфт сильнее на разных стадиях игры (ранняя/средняя/поздняя)?
 
 ВАЖНО: Полностью ИГНОРИРУЙ силу команд, рейтинги, форму игроков, историю встреч и любые другие факторы кроме самих героев. Это чистый анализ драфта.
 
@@ -401,11 +369,9 @@ func writeAnalysisInstructions(sb *strings.Builder) {
 ВАЖНО: Каждый фактор имеет фиксированный вес в итоговой оценке. Ты ОБЯЗАН оценить каждый фактор отдельно (кто выигрывает и насколько), а затем вычислить итоговую вероятность как взвешенную сумму.
 
 === ВЕСА ФАКТОРОВ ===
-1. Сила и форма команд (20%): Рейтинг, общий W/L, форма в последних 10 матчах. Если одна команда значительно сильнее (разница в рейтинге >200), этот фактор доминирует.
-2. Драфт — матчапы и синергии (35%): Контрпики, комбо героев, масштабирование по стадиям игры. При равных командах это решающий фактор.
-3. Лейн-матчапы (15%): Кто выигрывает каждый лайн (мид 1v1, сайд-лайны 2v2). Раннее преимущество конвертируется в победу в ~60% про-матчей.
-4. Мета патча и турнира (20%): Сильны ли выбранные герои в текущем патче и на этом турнире? Мета-герои vs нишевые пики.
-5. Комфорт игроков на героях (10%): Сигнатурные герои vs непривычные пики. Про-игрок на сигнатуре играет на 5-10% сильнее.
+1. Сила и форма команд (30%): Рейтинг, общий W/L, форма в последних 10 матчах. Если одна команда значительно сильнее (разница в рейтинге >200), этот фактор доминирует.
+2. Драфт — матчапы и синергии (50%): Контрпики, комбо героев, лейн-матчапы, масштабирование по стадиям игры. Это главный фактор прогноза.
+3. Мета патча и турнира (20%): Сильны ли выбранные герои в текущем патче и на этом турнире? Мета-герои vs нишевые пики.
 
 === МЕТОДОЛОГИЯ ===
 Базовая вероятность = 50/50. Каждый фактор сдвигает вероятность пропорционально своему весу.
@@ -415,7 +381,7 @@ func writeAnalysisInstructions(sb *strings.Builder) {
 
 === ФОРМАТ ОТВЕТА (JSON) ===
 Ответь валидным JSON-объектом с полями:
-- "factors": массив из 5 объектов с полями:
+- "factors": массив из 3 объектов с полями:
   - "name": название фактора
   - "weight": вес в процентах (число)
   - "advantage": "Radiant", "Dire" или "Equal"
