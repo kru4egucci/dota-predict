@@ -6,7 +6,7 @@ var Teams = map[int]string{
 	7119388: "Team Spirit",
 	8599101: "Gaimin Gladiators",
 	8291895: "Tundra Esports",
-	8605863: "BetBoom Team",
+	8255888: "BetBoom Team",
 	9247354: "Team Falcons",
 	2163:    "Team Liquid",
 	1838315: "Team Secret",
