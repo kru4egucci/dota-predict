@@ -639,6 +639,40 @@ func (c *Client) FindMatchOddsFresh(ctx context.Context, team1, team2 string, ga
 	return c.FindMatchOdds(ctx, team1, team2, gameNumber)
 }
 
+// FindPreMatchOdds returns the earliest (opening/pre-match) odds for a specific map
+// from the historical odds data. These represent the pre-match line before live adjustments.
+func (c *Client) FindPreMatchOdds(ctx context.Context, team1, team2 string, gameNumber int) (*models.MatchOdds, error) {
+	log := slog.With("team1", team1, "team2", team2, "game_number", gameNumber)
+
+	fixture, err := c.getCachedFixture(ctx, team1, team2)
+	if err != nil {
+		return nil, err
+	}
+
+	url := fmt.Sprintf("%s/historical-odds?fixtureId=%s&bookmakers=%s&apiKey=%s", baseURL, fixture.FixtureID, defaultBookmakers, c.apiKey)
+
+	var hist models.HistoricalOddsResponse
+	if err := c.get(ctx, url, &hist); err != nil {
+		return nil, fmt.Errorf("fetch historical odds for prematch: %w", err)
+	}
+
+	converted := c.convertHistoricalToEarliestOdds(&hist)
+	odds, err := c.extractOdds(converted, fixture, gameNumber)
+	if err != nil {
+		return nil, fmt.Errorf("no prematch odds for map %d: %w", gameNumber, err)
+	}
+
+	log.Info("oddspapi: прематч коэффициенты получены",
+		"fixture_id", fixture.FixtureID,
+		"bookmaker", odds.Bookmaker,
+		"map", odds.MapNumber,
+		"team1_name", odds.Team1Name, "team1_odds", odds.Team1Odds,
+		"team2_name", odds.Team2Name, "team2_odds", odds.Team2Odds,
+	)
+
+	return odds, nil
+}
+
 func stripCommon(s string) string {
 	s = strings.TrimSpace(s)
 	for _, prefix := range []string{"team ", "esports", "gaming"} {
