@@ -269,7 +269,7 @@ func (s *Server) processMatch(ctx context.Context, game *steam.LiveLeagueGame) {
 			Team1:   radiantName,
 			Team2:   direName,
 			BetOn:   bet.betTeam,
-			Amount:  int(winProb) * 20,
+			Amount:  analyzer.KellyBetAmount(winProb, bet.betOdds),
 			Odds:    bet.betOdds,
 			MatchID: matchID,
 			WinProb: winProb,

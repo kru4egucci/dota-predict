@@ -3,6 +3,7 @@ package analyzer
 import (
 	"encoding/json"
 	"log/slog"
+	"math"
 	"regexp"
 	"strconv"
 	"strings"
@@ -237,4 +238,27 @@ func confidenceMargin(confidence string) float64 {
 	default: // низкая or unknown
 		return 0.20 // +20%
 	}
+}
+
+const (
+	kellyCoeff    = 1.0     // множитель Келли (1.0 = полный Келли)
+	kellyBankroll = 10000.0 // виртуальный банкролл для расчёта размера ставки
+	minBetAmount  = 1000    // минимальная ставка
+)
+
+// KellyBetAmount рассчитывает размер ставки по критерию Келли.
+// winProb: 0-100, bookOdds: десятичный коэффициент (например 1.80).
+func KellyBetAmount(winProb float64, bookOdds float64) int {
+	if bookOdds <= 1 || winProb <= 0 {
+		return minBetAmount
+	}
+	b := bookOdds - 1
+	p := winProb / 100
+	q := 1 - p
+	kelly := (b*p - q) / b
+	if kelly <= 0 {
+		return minBetAmount
+	}
+	amount := kelly * kellyCoeff * kellyBankroll
+	return int(math.Max(amount, float64(minBetAmount)))
 }
