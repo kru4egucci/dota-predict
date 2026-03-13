@@ -18,6 +18,8 @@ var Teams = map[int]string{
 	9467224: "Aurora Gaming",
 	9823272: "Team Yandex",
 	9572001: "Parivision",
+	726228:  "Vici Gaming",
+	9303484: "Heroic",
 }
 
 // IsTier1 returns true if the given team ID is in the tier-1 list.
