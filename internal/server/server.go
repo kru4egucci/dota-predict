@@ -284,8 +284,10 @@ func (s *Server) processMatch(ctx context.Context, game *steam.LiveLeagueGame) {
 }
 
 // collectBestOdds polls oddspapi every minute for 10 minutes and returns the
-// odds snapshot with the best (highest) odds for betTeam. If no odds are found
-// during the watch period, falls back to the earliest odds of a previous map.
+// odds snapshot with the best (highest) odds for betTeam. Also fetches pre-match
+// odds for the specific map and compares — picks the highest across all sources.
+// If no odds are found during the watch period, falls back to the earliest odds
+// of a previous map.
 func (s *Server) collectBestOdds(ctx context.Context, radiantName, direName string, gameNumber int, betTeam string, matchID int64) *models.MatchOdds {
 	log := slog.With("match_id", matchID, "bet_team", betTeam)
 
@@ -301,34 +303,49 @@ func (s *Server) collectBestOdds(ctx context.Context, radiantName, direName stri
 
 	var bestOdds *models.MatchOdds
 	var bestPrice float64
+	var bestSource string
 
-	// Poll immediately, then every minute for 10 minutes.
+	// Helper to compare and update best odds.
+	tryUpdateWith := func(odds *models.MatchOdds, source string) {
+		price := matchOddsForTeam(odds, betTeam)
+		if price > bestPrice {
+			bestPrice = price
+			bestOdds = odds
+			bestSource = source
+			log.Info("найден лучший коэффициент",
+				"price", price,
+				"bookmaker", odds.Bookmaker,
+				"source", source,
+			)
+		}
+	}
+
+	// Fetch pre-match odds for the specific map (earliest historical line).
+	prematchOdds, err := s.oddsClient.FindPreMatchOdds(ctx, radiantName, direName, gameNumber)
+	if err != nil {
+		log.Debug("прематч коэффициенты недоступны", "error", err)
+	} else {
+		tryUpdateWith(prematchOdds, "prematch")
+	}
+
+	// Poll live odds immediately, then every minute for 10 minutes.
 	deadline := time.NewTimer(oddsWatchDuration)
 	defer deadline.Stop()
 
 	ticker := time.NewTicker(oddsWatchInterval)
 	defer ticker.Stop()
 
-	// Helper to check and update best odds.
-	tryUpdate := func() {
+	tryLiveUpdate := func() {
 		odds, err := s.oddsClient.FindMatchOddsFresh(ctx, radiantName, direName, gameNumber)
 		if err != nil {
-			log.Debug("коэффициенты недоступны", "error", err)
+			log.Debug("лайв коэффициенты недоступны", "error", err)
 			return
 		}
-		price := matchOddsForTeam(odds, betTeam)
-		if price > bestPrice {
-			bestPrice = price
-			bestOdds = odds
-			log.Info("найден лучший коэффициент",
-				"price", price,
-				"bookmaker", odds.Bookmaker,
-			)
-		}
+		tryUpdateWith(odds, "live")
 	}
 
-	// First poll immediately.
-	tryUpdate()
+	// First live poll immediately.
+	tryLiveUpdate()
 
 	for {
 		select {
@@ -338,6 +355,7 @@ func (s *Server) collectBestOdds(ctx context.Context, radiantName, direName stri
 		case <-deadline.C:
 			log.Info("сбор коэффициентов завершён",
 				"best_price", bestPrice,
+				"best_source", bestSource,
 			)
 			// If nothing found, try fallback to previous map.
 			if bestOdds == nil && gameNumber > 1 {
@@ -356,7 +374,7 @@ func (s *Server) collectBestOdds(ctx context.Context, radiantName, direName stri
 			}
 			return bestOdds
 		case <-ticker.C:
-			tryUpdate()
+			tryLiveUpdate()
 		}
 	}
 }
