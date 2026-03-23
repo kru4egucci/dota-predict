@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"dota-predict/internal/analyzer"
+	"dota-predict/internal/api/gc"
 	"dota-predict/internal/api/gsheets"
 	"dota-predict/internal/api/oddspapi"
 	"dota-predict/internal/api/opendota"
@@ -113,7 +114,7 @@ func runServer(cfg *config.Config) {
 		}
 		sheetName := cfg.GoogleSheetName
 		if sheetName == "" {
-			sheetName = "PGL Wallachia S7"
+			sheetName = "Birmingham 2026"
 		}
 		var err error
 		gsheetsClient, err = gsheets.NewClient(cfg.GoogleServiceAccountFile, spreadsheetID, sheetName)
@@ -125,10 +126,24 @@ func runServer(cfg *config.Config) {
 		}
 	}
 
-	srv := server.New(odClient, steamClient, orClient, oddsClient, tgClient, gsheetsClient)
+	var gcClient *gc.Client
+	if cfg.SteamGCUsername != "" {
+		gcClient = gc.NewClient(gc.Config{
+			Username: cfg.SteamGCUsername,
+			Password: cfg.SteamGCPassword,
+			AuthCode: cfg.SteamGCAuthCode,
+		})
+		slog.Info("Game Coordinator fallback активен")
+	}
+
+	srv := server.New(odClient, steamClient, orClient, oddsClient, tgClient, gsheetsClient, gcClient)
 
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
+
+	if gcClient != nil {
+		go gcClient.Run(ctx)
+	}
 
 	if err := srv.Run(ctx); err != nil {
 		slog.Error("ошибка сервера", "error", err)

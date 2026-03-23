@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"dota-predict/internal/analyzer"
+	"dota-predict/internal/api/gc"
 	"dota-predict/internal/api/gsheets"
 	"dota-predict/internal/api/oddspapi"
 	"dota-predict/internal/api/opendota"
@@ -30,6 +31,7 @@ type Server struct {
 	oddsClient    *oddspapi.Client
 	tgClient      *telegram.Client
 	gsheetsClient *gsheets.Client
+	gcClient      *gc.Client // optional, for real-time draft fallback
 	coll          *collector.Collector
 	ana           *analyzer.Analyzer
 
@@ -45,6 +47,7 @@ func New(
 	oddsClient *oddspapi.Client,
 	tgClient *telegram.Client,
 	gsheetsClient *gsheets.Client,
+	gcClient *gc.Client,
 ) *Server {
 	return &Server{
 		odClient:      odClient,
@@ -53,6 +56,7 @@ func New(
 		oddsClient:    oddsClient,
 		tgClient:      tgClient,
 		gsheetsClient: gsheetsClient,
+		gcClient:      gcClient,
 		coll:          collector.New(odClient, steamClient),
 		ana:           analyzer.New(orClient),
 		processed:     make(map[int64]bool),
@@ -128,10 +132,26 @@ func (s *Server) tick(ctx context.Context) {
 		)
 
 		if !isDraftComplete(g) {
-			log.Debug("тир-1 матч найден, но драфт не завершён",
-				"players_count", len(g.Players),
-			)
-			continue
+			if s.gcClient != nil {
+				log.Debug("драфт не завершён в Steam API, пробуем Game Coordinator")
+				gcPlayers, err := s.gcClient.GetLiveMatchDraft(ctx, g.MatchID, g.LobbyID)
+				if err != nil {
+					log.Debug("GC fallback не удался", "error", err)
+					continue
+				}
+				if !patchDraftFromGC(g, gcPlayers) {
+					log.Debug("GC: драфт тоже не завершён",
+						"gc_players", len(gcPlayers),
+					)
+					continue
+				}
+				log.Info("драфт получен из Game Coordinator")
+			} else {
+				log.Debug("тир-1 матч найден, но драфт не завершён",
+					"players_count", len(g.Players),
+				)
+				continue
+			}
 		}
 
 		s.mu.Lock()
@@ -165,6 +185,45 @@ func isDraftComplete(g *steam.LiveLeagueGame) bool {
 		}
 	}
 	return true
+}
+
+// patchDraftFromGC updates the game's player hero picks with data from the Game
+// Coordinator. Returns true if the draft is now complete (all 10 heroes picked).
+func patchDraftFromGC(g *steam.LiveLeagueGame, gcPlayers []gc.DraftPlayer) bool {
+	if len(gcPlayers) < 10 {
+		return false
+	}
+	for _, gcp := range gcPlayers {
+		if gcp.HeroID == 0 {
+			return false
+		}
+	}
+
+	// Try patching existing players by account ID.
+	patched := 0
+	for i := range g.Players {
+		for _, gcp := range gcPlayers {
+			if uint32(g.Players[i].AccountID) == gcp.AccountID {
+				g.Players[i].HeroID = int(gcp.HeroID)
+				patched++
+				break
+			}
+		}
+	}
+
+	// If Steam API had fewer than 10 players, rebuild from GC data.
+	if len(g.Players) < 10 || patched < 10 {
+		g.Players = make([]steam.LiveLeaguePlayer, 0, len(gcPlayers))
+		for _, gcp := range gcPlayers {
+			g.Players = append(g.Players, steam.LiveLeaguePlayer{
+				AccountID: int(gcp.AccountID),
+				HeroID:    int(gcp.HeroID),
+				Team:      int(gcp.Team),
+			})
+		}
+	}
+
+	return isDraftComplete(g)
 }
 
 // processMatch runs analysis, sends analytics to Telegram, then watches odds
@@ -249,13 +308,14 @@ func (s *Server) processMatch(ctx context.Context, game *steam.LiveLeagueGame) {
 	)
 
 	betMsg := s.buildBetMessage(prediction, matchID, bet)
-	if err := s.tgClient.SendMessage(ctx, betMsg); err != nil {
-		log.Error("ошибка отправки ставки в Telegram", "error", err)
-	} else {
-		log.Info("ставка отправлена в Telegram",
-			"total_duration", time.Since(matchStart).String(),
-		)
-	}
+	_ = betMsg // отправка СТАВКА в Telegram отключена
+	// if err := s.tgClient.SendMessage(ctx, betMsg); err != nil {
+	// 	log.Error("ошибка отправки ставки в Telegram", "error", err)
+	// } else {
+	// 	log.Info("ставка отправлена в Telegram",
+	// 		"total_duration", time.Since(matchStart).String(),
+	// 	)
+	// }
 
 	// --- Step 4: Record bet to Google Sheets ---
 	if s.gsheetsClient != nil {
@@ -263,13 +323,15 @@ func (s *Server) processMatch(ctx context.Context, game *steam.LiveLeagueGame) {
 		if prediction.Betting.DireWinProb > winProb {
 			winProb = prediction.Betting.DireWinProb
 		}
+		amount := analyzer.KellyBetAmount(winProb, bet.betOdds)
+		amount = capBetByConfidence(amount, winProb)
 		row := &gsheets.BetRow{
 			Date:    time.Now().Format("02.01.2006"),
 			Event:   fmt.Sprintf("map %d", gameNumber),
 			Team1:   radiantName,
 			Team2:   direName,
 			BetOn:   bet.betTeam,
-			Amount:  analyzer.KellyBetAmount(winProb, bet.betOdds),
+			Amount:  amount,
 			Odds:    bet.betOdds,
 			MatchID: matchID,
 			WinProb: winProb,
@@ -523,6 +585,26 @@ const (
 	oddsWatchDuration = 10 * time.Minute
 	oddsWatchInterval = 1 * time.Minute
 )
+
+// capBetByConfidence ограничивает размер ставки при низкой уверенности.
+// winProb: 0-100.
+func capBetByConfidence(amount int, winProb float64) int {
+	var maxAmount int
+	switch {
+	case winProb < 60:
+		maxAmount = 2000
+	case winProb < 65:
+		maxAmount = 3000
+	case winProb < 70:
+		maxAmount = 4000
+	default:
+		return amount
+	}
+	if amount > maxAmount {
+		return maxAmount
+	}
+	return amount
+}
 
 
 func (s *Server) sendError(ctx context.Context, matchID int64, radiant, dire string, err error) {

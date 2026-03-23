@@ -94,6 +94,7 @@ type steamPlayerScore struct {
 // LiveLeagueGame holds exported data about a live league game from Steam API.
 type LiveLeagueGame struct {
 	MatchID         int64
+	LobbyID         int64
 	LeagueID        int
 	RadiantTeamID   int
 	DireTeamID      int
@@ -128,6 +129,7 @@ func (c *Client) GetLiveLeagueGames(ctx context.Context) ([]LiveLeagueGame, erro
 	for _, g := range games {
 		lg := LiveLeagueGame{
 			MatchID:         g.MatchID,
+			LobbyID:         g.LobbyID,
 			LeagueID:        g.LeagueID,
 			RadiantTeamID:   g.RadiantTeam.TeamID,
 			DireTeamID:      g.DireTeam.TeamID,
