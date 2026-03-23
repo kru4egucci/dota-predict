@@ -23,9 +23,6 @@ type Config struct {
 	GoogleServiceAccountFile string
 	GoogleSpreadsheetID      string
 	GoogleSheetName          string
-	SteamGCUsername          string
-	SteamGCPassword          string
-	SteamGCAuthCode          string
 }
 
 // Load reads configuration from .env file (if present) and environment variables.
@@ -55,9 +52,6 @@ func Load() (*Config, error) {
 		GoogleServiceAccountFile: os.Getenv("GOOGLE_SERVICE_ACCOUNT_FILE"),
 		GoogleSpreadsheetID:      os.Getenv("GOOGLE_SPREADSHEET_ID"),
 		GoogleSheetName:          os.Getenv("GOOGLE_SHEET_NAME"),
-		SteamGCUsername:          os.Getenv("STEAM_GC_USERNAME"),
-		SteamGCPassword:          os.Getenv("STEAM_GC_PASSWORD"),
-		SteamGCAuthCode:          os.Getenv("STEAM_GC_AUTH_CODE"),
 	}, nil
 }
 
