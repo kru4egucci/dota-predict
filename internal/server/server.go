@@ -417,12 +417,6 @@ func (s *Server) buildAnalyticsMessage(pred *models.Prediction, matchID int64, b
 		}
 	}
 
-	if betting.DraftRadiantProb > 0 {
-		sb.WriteString(fmt.Sprintf("\n🎲 <b>Драфт:</b>\n"))
-		sb.WriteString(fmt.Sprintf("  %s: %.1f%%\n", pred.RadiantTeamName, betting.DraftRadiantProb))
-		sb.WriteString(fmt.Sprintf("  %s: %.1f%%\n", pred.DireTeamName, betting.DraftDireProb))
-	}
-
 	// --- Factors ---
 	if len(pred.Factors) > 0 {
 		sb.WriteString("\n")

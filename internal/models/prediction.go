@@ -23,21 +23,9 @@ type CollectedData struct {
 	DireTeam           *Team
 	RadiantTeamMatches []TeamMatch
 	DireTeamMatches    []TeamMatch
-	RadiantTeamHeroes  []TeamHero
-	DireTeamHeroes     []TeamHero
-	HeadToHead         []TeamMatch
-
 	// Player analysis (concurrent-safe via mutex).
-	mu              sync.Mutex
-	PlayerHeroStats map[int]*PlayerHeroStat     // account_id -> stat for picked hero
-	PlayerRecent    map[int][]PlayerRecentMatch  // account_id -> recent matches
-}
-
-// SetPlayerHeroStat safely sets a player's hero stat.
-func (cd *CollectedData) SetPlayerHeroStat(accountID int, stat *PlayerHeroStat) {
-	cd.mu.Lock()
-	cd.PlayerHeroStats[accountID] = stat
-	cd.mu.Unlock()
+	mu           sync.Mutex
+	PlayerRecent map[int][]PlayerRecentMatch // account_id -> recent matches
 }
 
 // SetPlayerRecent safely sets a player's recent matches.
@@ -52,7 +40,6 @@ type Prediction struct {
 	RadiantTeamName string
 	DireTeamName    string
 	Analysis        string
-	DraftAnalysis   string
 	Betting         BettingInfo
 	Factors         []FactorAssessment
 }
@@ -72,10 +59,6 @@ type BettingInfo struct {
 	RadiantWinProb float64 // 0-100
 	DireWinProb    float64 // 0-100
 	Confidence     string  // Низкая/Средняя/Высокая
-
-	// Draft-only analysis.
-	DraftRadiantProb float64
-	DraftDireProb    float64
 
 	// Calculated odds.
 	RadiantMinOdds      float64 // fair value (break-even)

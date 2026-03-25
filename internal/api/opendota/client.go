@@ -8,7 +8,6 @@ import (
 	"log/slog"
 	"net/http"
 	"strings"
-	"sync"
 	"time"
 )
 
@@ -132,49 +131,41 @@ func (c *Client) get(ctx context.Context, path string, result interface{}) error
 	return fmt.Errorf("API %s: rate limit exceeded after %d retries", path, maxRetries)
 }
 
-// rateLimiter implements a token-bucket rate limiter.
+// rateLimiter implements a token-bucket rate limiter using a ticker
+// to refill tokens, avoiding spin-wait CPU overhead.
 type rateLimiter struct {
-	mu         sync.Mutex
-	tokens     int
-	maxTokens  int
-	refillRate time.Duration
-	lastRefill time.Time
+	tokens chan struct{}
 }
 
 func newRateLimiter(maxRequests int, period time.Duration) *rateLimiter {
-	return &rateLimiter{
-		tokens:     maxRequests,
-		maxTokens:  maxRequests,
-		refillRate: period,
-		lastRefill: time.Now(),
+	rl := &rateLimiter{
+		tokens: make(chan struct{}, maxRequests),
 	}
+	// Fill initial tokens.
+	for range maxRequests {
+		rl.tokens <- struct{}{}
+	}
+	// Refill tokens evenly over the period.
+	interval := period / time.Duration(maxRequests)
+	go func() {
+		ticker := time.NewTicker(interval)
+		defer ticker.Stop()
+		for range ticker.C {
+			select {
+			case rl.tokens <- struct{}{}:
+			default: // bucket full
+			}
+		}
+	}()
+	return rl
 }
 
 // Wait blocks until a token is available or the context is cancelled.
 func (rl *rateLimiter) Wait(ctx context.Context) error {
-	for {
-		rl.mu.Lock()
-		rl.refill()
-		if rl.tokens > 0 {
-			rl.tokens--
-			rl.mu.Unlock()
-			return nil
-		}
-		rl.mu.Unlock()
-
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(500 * time.Millisecond):
-		}
-	}
-}
-
-func (rl *rateLimiter) refill() {
-	now := time.Now()
-	elapsed := now.Sub(rl.lastRefill)
-	if elapsed >= rl.refillRate {
-		rl.tokens = rl.maxTokens
-		rl.lastRefill = now
+	select {
+	case <-rl.tokens:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
 	}
 }

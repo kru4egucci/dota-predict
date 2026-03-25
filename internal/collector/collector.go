@@ -33,10 +33,9 @@ func (c *Collector) CollectMatchData(ctx context.Context, matchID int64) (*model
 		HeroNames:       make(map[int]string),
 		HeroPatchStats:  make(map[int]*models.HeroPatchStats),
 		HeroLeagueStats: make(map[int]*models.HeroLeagueStats),
-		HeroStats:       make(map[int]*models.HeroStats),
-		HeroMatchups:    make(map[int][]models.HeroMatchup),
-		PlayerHeroStats: make(map[int]*models.PlayerHeroStat),
-		PlayerRecent:    make(map[int][]models.PlayerRecentMatch),
+		HeroStats:    make(map[int]*models.HeroStats),
+		HeroMatchups: make(map[int][]models.HeroMatchup),
+		PlayerRecent: make(map[int][]models.PlayerRecentMatch),
 	}
 
 	// Шаг 1: Загрузка матча (OpenDota -> OpenDota Live -> Steam Live).
@@ -117,24 +116,20 @@ func (c *Collector) CollectMatchData(ctx context.Context, matchID int64) (*model
 		})
 	}
 
-	// Patch meta: determine current patch, then fetch patch-specific hero stats.
+	// Patch meta: fetch patch-specific hero stats.
+	const currentPatch = "7.41"
 	g.Go(func() error {
-		patch, err := c.od.GetCurrentPatch(gctx)
-		if err != nil {
-			log.Warn("не удалось определить текущий патч", "error", err)
-			return nil
-		}
-		data.Patch = patch
+		data.Patch = currentPatch
 
-		patchStats, err := c.od.GetHeroStatsByPatch(gctx, patch)
+		patchStats, err := c.od.GetHeroStatsByPatch(gctx, currentPatch)
 		if err != nil {
-			log.Warn("не удалось получить статистику патча", "patch", patch, "error", err)
+			log.Warn("не удалось получить статистику патча", "patch", currentPatch, "error", err)
 			return nil
 		}
 		for i, s := range patchStats {
 			data.HeroPatchStats[s.HeroID] = &patchStats[i]
 		}
-		log.Debug("статистика патча загружена", "patch", patch, "heroes", len(patchStats))
+		log.Debug("статистика патча загружена", "patch", currentPatch, "heroes", len(patchStats))
 		return nil
 	})
 
@@ -201,27 +196,6 @@ func (c *Collector) CollectMatchData(ctx context.Context, matchID int64) (*model
 			return nil
 		})
 
-		g.Go(func() error {
-			heroes, err := c.od.GetTeamHeroes(gctx, radiantTeamID)
-			if err != nil {
-				log.Warn("не удалось получить героев Radiant", "team_id", radiantTeamID, "error", err)
-				return nil
-			}
-			data.RadiantTeamHeroes = heroes
-			log.Debug("герои Radiant загружены", "count", len(heroes))
-			return nil
-		})
-
-		g.Go(func() error {
-			heroes, err := c.od.GetTeamHeroes(gctx, direTeamID)
-			if err != nil {
-				log.Warn("не удалось получить героев Dire", "team_id", direTeamID, "error", err)
-				return nil
-			}
-			data.DireTeamHeroes = heroes
-			log.Debug("герои Dire загружены", "count", len(heroes))
-			return nil
-		})
 	}
 
 	for _, player := range match.Players {
@@ -230,22 +204,6 @@ func (c *Collector) CollectMatchData(ctx context.Context, matchID int64) (*model
 		}
 
 		accountID := player.AccountID
-		heroID := player.HeroID
-
-		g.Go(func() error {
-			heroStats, err := c.od.GetPlayerHeroes(gctx, accountID)
-			if err != nil {
-				log.Warn("не удалось получить героев игрока", "account_id", accountID, "error", err)
-				return nil
-			}
-			for i, hs := range heroStats {
-				if hs.HeroID == heroID {
-					data.SetPlayerHeroStat(accountID, &heroStats[i])
-					break
-				}
-			}
-			return nil
-		})
 
 		g.Go(func() error {
 			recent, err := c.od.GetPlayerRecentMatches(gctx, accountID)
@@ -260,11 +218,6 @@ func (c *Collector) CollectMatchData(ctx context.Context, matchID int64) (*model
 
 	if err := g.Wait(); err != nil {
 		return nil, fmt.Errorf("сбор данных: %w", err)
-	}
-
-	if isPro && len(data.RadiantTeamMatches) > 0 {
-		data.HeadToHead = filterH2H(data.RadiantTeamMatches, direTeamID)
-		log.Debug("история личных встреч", "h2h_matches", len(data.HeadToHead))
 	}
 
 	log.Info("сбор данных завершён [3/4]",
@@ -336,12 +289,3 @@ func splitHeroesByTeam(match *models.Match) (radiant, dire []int) {
 	return
 }
 
-func filterH2H(teamMatches []models.TeamMatch, opposingTeamID int) []models.TeamMatch {
-	var h2h []models.TeamMatch
-	for _, m := range teamMatches {
-		if m.OpposingTeamID == opposingTeamID {
-			h2h = append(h2h, m)
-		}
-	}
-	return h2h
-}

@@ -327,41 +327,6 @@ func writePlayerFormSection(sb *strings.Builder, data *models.CollectedData) {
 	sb.WriteString("\n")
 }
 
-func buildDraftPrompt(data *models.CollectedData) string {
-	var sb strings.Builder
-
-	sb.WriteString("=== ЗАПРОС НА АНАЛИЗ ДРАФТА DOTA 2 ===\n\n")
-
-	writeDraftSection(&sb, data)
-	writeHeroStatsSection(&sb, data)
-	writeLeagueMetaSection(&sb, data)
-	writeMatchupSection(&sb, data)
-	writeDraftAnalysisInstructions(&sb)
-
-	return sb.String()
-}
-
-func writeDraftAnalysisInstructions(sb *strings.Builder) {
-	sb.WriteString(`=== ИНСТРУКЦИИ ПО АНАЛИЗУ ===
-На основе данных выше проведи ЧИСТЫЙ анализ драфта. Оцени ТОЛЬКО:
-
-1. Матчапы героев: Кто кого контрит? У какой стороны лучше индивидуальные матчапы?
-2. Синергии внутри команды: Какие комбо героев есть у каждой стороны? Насколько хорошо герои дополняют друг друга?
-3. Мета патча и турнира: Насколько сильны выбранные герои в текущем патче и на данном турнире?
-4. Масштабирование: Какой драфт сильнее на разных стадиях игры (ранняя/средняя/поздняя)?
-
-ВАЖНО: Полностью ИГНОРИРУЙ силу команд, рейтинги, форму игроков, историю встреч и любые другие факторы кроме самих героев. Это чистый анализ драфта.
-
-=== ФОРМАТ ОТВЕТА (JSON) ===
-Ответь валидным JSON-объектом с полями:
-- "draft_advantage": "Radiant", "Dire" или "Equal"
-- "radiant_win_prob": вероятность победы Radiant по драфту (число 0-100)
-- "dire_win_prob": вероятность победы Dire по драфту (число 0-100)
-- "key_factors": массив из 3 строк — ключевые факторы драфта с конкретными цифрами
-- "analysis": детальный анализ драфта (1-2 абзаца, Markdown-разметка, ссылки на данные)
-`)
-}
-
 func writeAnalysisInstructions(sb *strings.Builder) {
 	sb.WriteString(`=== ИНСТРУКЦИИ ПО АНАЛИЗУ ===
 На основе ВСЕХ данных выше предоставь комплексный прогноз матча Dota 2.

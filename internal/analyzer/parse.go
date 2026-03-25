@@ -31,35 +31,24 @@ type factorJSON struct {
 	Reasoning string `json:"reasoning"`
 }
 
-type draftAnalysisJSON struct {
-	DraftAdvantage string   `json:"draft_advantage"`
-	RadiantWinProb float64  `json:"radiant_win_prob"`
-	DireWinProb    float64  `json:"dire_win_prob"`
-	KeyFactors     []string `json:"key_factors"`
-	Analysis       string   `json:"analysis"`
-}
-
 // --- Regex fallback patterns ---
 
 var (
-	reRadiantProb  = regexp.MustCompile(`(?i)вероятность победы Radiant[^:]*:\s*\**\s*(\d+(?:[.,]\d+)?)\s*%`)
-	reDireProb     = regexp.MustCompile(`(?i)вероятность победы Dire[^:]*:\s*\**\s*(\d+(?:[.,]\d+)?)\s*%`)
-	reConfidence   = regexp.MustCompile(`(?i)уверенность[^:]*:\s*\**\s*(низкая|средняя|высокая)`)
-	reDraftRadiant = regexp.MustCompile(`(?i)вероятность победы Radiant по драфту[^:]*:\s*\**\s*(\d+(?:[.,]\d+)?)\s*%`)
-	reDraftDire    = regexp.MustCompile(`(?i)вероятность победы Dire по драфту[^:]*:\s*\**\s*(\d+(?:[.,]\d+)?)\s*%`)
+	reRadiantProb = regexp.MustCompile(`(?i)вероятность победы Radiant[^:]*:\s*\**\s*(\d+(?:[.,]\d+)?)\s*%`)
+	reDireProb    = regexp.MustCompile(`(?i)вероятность победы Dire[^:]*:\s*\**\s*(\d+(?:[.,]\d+)?)\s*%`)
+	reConfidence  = regexp.MustCompile(`(?i)уверенность[^:]*:\s*\**\s*(низкая|средняя|высокая)`)
 )
 
 // parsedResult holds all extracted data from LLM responses.
 type parsedResult struct {
-	Betting       models.BettingInfo
-	Analysis      string
-	DraftAnalysis string
-	Factors       []models.FactorAssessment
+	Betting models.BettingInfo
+	Analysis string
+	Factors  []models.FactorAssessment
 }
 
 // parsePrediction extracts probabilities, confidence, factors, and analysis text from LLM output.
 // Tries JSON parsing first (structured output), falls back to regex.
-func parsePrediction(mainText, draftText string) parsedResult {
+func parsePrediction(mainText string) parsedResult {
 	var r parsedResult
 
 	// --- Main analysis ---
@@ -101,26 +90,6 @@ func parsePrediction(mainText, draftText string) parsedResult {
 			r.Betting.Confidence = strings.ToLower(m[1])
 		}
 		r.Analysis = mainText
-	}
-
-	// --- Draft analysis ---
-	if draftText != "" {
-		cleanedDraft := extractJSON(draftText)
-		var draftResp draftAnalysisJSON
-		if err := json.Unmarshal([]byte(cleanedDraft), &draftResp); err == nil {
-			r.Betting.DraftRadiantProb = draftResp.RadiantWinProb
-			r.Betting.DraftDireProb = draftResp.DireWinProb
-			r.DraftAnalysis = draftResp.Analysis
-			slog.Debug("parse: драфт распарсен как JSON",
-				"radiant_prob", r.Betting.DraftRadiantProb,
-				"dire_prob", r.Betting.DraftDireProb,
-			)
-		} else {
-			// Regex fallback.
-			r.Betting.DraftRadiantProb = matchProb(reDraftRadiant, draftText)
-			r.Betting.DraftDireProb = matchProb(reDraftDire, draftText)
-			r.DraftAnalysis = draftText
-		}
 	}
 
 	calcOdds(&r.Betting)

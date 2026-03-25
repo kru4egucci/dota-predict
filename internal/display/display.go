@@ -23,15 +23,6 @@ func PrintPrediction(p *models.Prediction) {
 	fmt.Println(p.Analysis)
 	fmt.Println()
 
-	if p.DraftAnalysis != "" {
-		fmt.Println(divider)
-		fmt.Println(centerText("ВЕРОЯТНОСТЬ ПОБЕДЫ ПО ДРАФТУ", 60))
-		fmt.Println(divider)
-		fmt.Println()
-		fmt.Println(p.DraftAnalysis)
-		fmt.Println()
-	}
-
 	printBettingSection(p)
 
 	fmt.Println(divider)
@@ -58,13 +49,6 @@ func printBettingSection(p *models.Prediction) {
 	fmt.Printf("    %-20s  Вероятность: %5.1f%%\n", p.RadiantTeamName, b.RadiantWinProb)
 	fmt.Printf("    %-20s  Вероятность: %5.1f%%\n", p.DireTeamName, b.DireWinProb)
 	fmt.Println()
-
-	if b.DraftRadiantProb > 0 || b.DraftDireProb > 0 {
-		fmt.Println("  Прогноз по драфту (только герои):")
-		fmt.Printf("    %-20s  Вероятность: %5.1f%%\n", p.RadiantTeamName, b.DraftRadiantProb)
-		fmt.Printf("    %-20s  Вероятность: %5.1f%%\n", p.DireTeamName, b.DraftDireProb)
-		fmt.Println()
-	}
 
 	fmt.Println(strings.Repeat("-", 60))
 	fmt.Println()
