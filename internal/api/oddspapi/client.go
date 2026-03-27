@@ -412,7 +412,7 @@ func getPrice(market models.OddsMarket, outcomeID string) (float64, bool) {
 func (c *Client) get(ctx context.Context, url string, result interface{}) error {
 	const maxRetries = 3
 
-	for attempt := 0; attempt <= maxRetries; attempt++ {
+	for attempt := 0; attempt < maxRetries; attempt++ {
 		req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 		if err != nil {
 			return err
@@ -424,6 +424,7 @@ func (c *Client) get(ctx context.Context, url string, result interface{}) error 
 
 		if err != nil {
 			slog.Error("oddspapi: ошибка HTTP запроса",
+				"url", url,
 				"duration", elapsed.String(),
 				"error", err,
 			)
@@ -432,10 +433,12 @@ func (c *Client) get(ctx context.Context, url string, result interface{}) error 
 
 		if resp.StatusCode == http.StatusTooManyRequests {
 			resp.Body.Close()
-			if attempt < maxRetries {
-				wait := 3 * time.Second
+			if attempt < maxRetries-1 {
+				wait := time.Duration(attempt+1) * 3 * time.Second
 				slog.Warn("oddspapi: rate limited, повтор",
 					"attempt", attempt+1,
+					"max_retries", maxRetries,
+					"url", url,
 					"wait", wait.String(),
 				)
 				select {

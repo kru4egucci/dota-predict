@@ -220,6 +220,13 @@ func (c *Collector) CollectMatchData(ctx context.Context, matchID int64) (*model
 		return nil, fmt.Errorf("сбор данных: %w", err)
 	}
 
+	// Fallback: fill missing hero names from HeroStats (in case /heroes API failed).
+	for id, s := range data.HeroStats {
+		if _, ok := data.HeroNames[id]; !ok && s.LocalizedName != "" {
+			data.HeroNames[id] = s.LocalizedName
+		}
+	}
+
 	log.Info("сбор данных завершён [3/4]",
 		"duration", time.Since(start).String(),
 		"total_duration", time.Since(totalStart).String(),
